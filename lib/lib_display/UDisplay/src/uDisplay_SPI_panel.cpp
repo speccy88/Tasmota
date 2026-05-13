@@ -203,6 +203,14 @@ bool SPIPanel::pushColors(uint16_t *data, uint32_t len, bool not_swapped) {
 }
 
 bool SPIPanel::setAddrWindow(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
+    if (cfg.bpp == 1 && cfg.col_mode == UDISP_PIXFMT_ST7305_2X4) {
+        window_x0 = x0;
+        window_y0 = y0;
+        window_x1 = x1;
+        window_y1 = y1;
+        return false;
+    }
+
     // From original uDisplay::setAddrWindow
     window_x0 = x0;
     window_y0 = y0;
@@ -294,6 +302,11 @@ bool SPIPanel::displayOnff(int8_t on) {
     }
     spi->csHigh();
     spi->endTransaction();
+
+    if (display_on && fb_buffer && cfg.bpp == 1 && cfg.col_mode == UDISP_PIXFMT_ST7305_2X4) {
+        updateFrameST7305_2X4();
+        return true;
+    }
     
     return false; //true;
 }
@@ -352,6 +365,10 @@ bool SPIPanel::updateFrame() {
     // From original uDisplay::Updateframe - only for monochrome SPI OLEDs
     // Only handle framebuffer updates for monochrome displays
     if (!fb_buffer || cfg.bpp != 1) return false;
+
+    if (cfg.col_mode == UDISP_PIXFMT_ST7305_2X4) {
+        return updateFrameST7305_2X4();
+    }
     
     // OLED page-based framebuffer update (from original code)
     uint8_t ys = height >> 3;
@@ -375,6 +392,53 @@ bool SPIPanel::updateFrame() {
             }
         }
     }
+    spi->csHigh();
+    spi->endTransaction();
+    return true;
+}
+
+uint8_t SPIPanel::getMonoPixel(int16_t x, int16_t y) const {
+    if (x < 0 || x >= width || y < 0 || y >= height) {
+        return 0;
+    }
+    return (fb_buffer[x + (y >> 3) * width] & (1 << (y & 7))) ? 1 : 0;
+}
+
+bool SPIPanel::updateFrameST7305_2X4() {
+    spi->beginTransaction();
+    spi->csLow();
+
+    // The ST7305 does not reliably restart at the full-screen RAM window on a
+    // bare RAMWR, so set the descriptor-provided RAM range each flush.
+    spi->writeCommand(cfg.cmd_set_addr_x);
+    spi->writeData8(cfg.ram_x_start);
+    spi->writeData8(cfg.ram_x_end);
+    spi->writeCommand(cfg.cmd_set_addr_y);
+    spi->writeData8(cfg.ram_y_start);
+    spi->writeData8(cfg.ram_y_end);
+    spi->writeCommand(cfg.cmd_write_ram);
+
+    for (uint16_t x = 0; x < width; x += 2) {
+        for (uint16_t y = 0; y < height; y += 4) {
+            // ST7305 Waveshare RLCD packs one byte as 2 columns x 4 rows:
+            // b7 row0/col0, b6 row0/col1, ..., b1 row3/col0, b0 row3/col1.
+            // Panel RAM is scanned bottom-to-top relative to Tasmota's framebuffer.
+            uint8_t packed = 0;
+            int16_t sy = height - 1 - y;
+            if (getMonoPixel(x,     sy    )) packed |= 0x80;
+            if (getMonoPixel(x + 1, sy    )) packed |= 0x40;
+            if (getMonoPixel(x,     sy - 1)) packed |= 0x20;
+            if (getMonoPixel(x + 1, sy - 1)) packed |= 0x10;
+            if (getMonoPixel(x,     sy - 2)) packed |= 0x08;
+            if (getMonoPixel(x + 1, sy - 2)) packed |= 0x04;
+            if (getMonoPixel(x,     sy - 3)) packed |= 0x02;
+            if (getMonoPixel(x + 1, sy - 3)) packed |= 0x01;
+            // Renderer uses bit=1 for WHITE. On this reflective ST7305 glass,
+            // RAM bit=0 is the light pixel state, so invert at the final pack.
+            spi->writeData8(~packed);
+        }
+    }
+
     spi->csHigh();
     spi->endTransaction();
     return true;
