@@ -10,6 +10,10 @@ static constexpr uint16_t udisp_colors[] = {
 };
 
 uint16_t uDisplay::GetColorFromIndex(uint8_t index) {
+    if (col_type == uCOLOR_BW) {
+        return (index > 0) ? 1 : 0;
+    }
+
     const size_t color_count = sizeof(udisp_colors) / sizeof(udisp_colors[0]);
     
     if (index >= color_count) {

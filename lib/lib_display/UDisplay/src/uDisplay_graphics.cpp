@@ -6,12 +6,22 @@
 static constexpr uint16_t RGB16_TO_MONO      = 0x8410;
 static constexpr uint16_t RGB16_SWAP_TO_MONO = 0x1084;
 
+static inline uint16_t uDisplayMonoColor(uint16_t color) {
+    if (color <= INVERSE) {
+        return color;
+    }
+    return (color & RGB16_TO_MONO) ? WHITE : BLACK;
+}
+
 void uDisplay::drawPixel(int16_t x, int16_t y, uint16_t color) {
     if (universal_panel->drawPixel(x, y, color)) {
         return; // Handled by universal panel
     }
 
     if (framebuffer) {
+        if (bpp == 1) {
+            color = uDisplayMonoColor(color);
+        }
         Renderer::drawPixel(x, y, color);
         return;
     }
@@ -27,6 +37,9 @@ void uDisplay::drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color) {
     }
 
     if (framebuffer) {
+        if (bpp == 1) {
+            color = uDisplayMonoColor(color);
+        }
         Renderer::drawFastHLine(x, y, w, color);
         return;
     }
@@ -35,6 +48,9 @@ void uDisplay::drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color) {
 
 void uDisplay::drawFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color) {
     if (framebuffer) {
+        if (bpp == 1) {
+            color = uDisplayMonoColor(color);
+        }
         Renderer::drawFastVLine(x, y, h, color);
         return;
     }
@@ -56,6 +72,9 @@ void uDisplay::fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t col
     }
 
     if (framebuffer) {
+        if (bpp == 1) {
+            color = uDisplayMonoColor(color);
+        }
         Renderer::fillRect(x, y, w, h, color);
         return;
     }
