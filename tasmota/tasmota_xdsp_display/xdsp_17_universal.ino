@@ -473,7 +473,8 @@ Renderer *Init_uDisplay(const char *desc) {
     color_type = renderer->color_type();
 
     renderer->DisplayInit(DISPLAY_INIT_MODE, Settings->display_size, inirot, Settings->display_font);
-    renderer->clearDisplay();
+    renderer->fillScreen(bg_color);
+    renderer->Updateframe();
 
     Settings->display_width = renderer->width();
     Settings->display_height = renderer->height();
