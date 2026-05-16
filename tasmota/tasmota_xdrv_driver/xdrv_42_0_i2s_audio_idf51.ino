@@ -59,6 +59,12 @@
 extern FS *ufsp;
 extern FS *ffsp;
 
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+void S3boxAudioPower(uint8_t pwr);
+void S3boxInit(void);
+bool S3boxCodecReady(void);
+#endif
+
 constexpr int preallocateBufferSize = 16*1024;
 constexpr int preallocateCodecSize  = 29192; // MP3 codec max mem needed
 constexpr int preallocateCodecSizeAAC = 85332; // AAC+SBR codec max mem needed
@@ -392,6 +398,11 @@ enum {
 // signal to an external Berry driver that we turn audio power on or off
 void I2SAudioPower(bool power) {
   callBerryEventDispatcher(PSTR("audio"), PSTR("power"), power, nullptr, 0);
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+  if (S3boxCodecReady()) {
+    S3boxAudioPower(power ? 1 : 0);
+  }
+#endif
 }
 
 //
@@ -639,6 +650,9 @@ void I2sInit(void) {
     audio_i2s_mp3.preallocateCodec = special_malloc(preallocateCodecSize);
   }
 #endif // USE_I2S_MP3
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+  S3boxInit();
+#endif
   AddLog(LOG_LEVEL_DEBUG, "I2S: I2sInit done");
 }
 

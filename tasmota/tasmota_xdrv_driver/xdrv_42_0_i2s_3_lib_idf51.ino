@@ -22,6 +22,11 @@
 
 #include "AudioOutput.h"
 
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+void S3boxSetTxSampleRate(uint32_t hz);
+void S3boxSetRxSampleRate(uint32_t hz);
+#endif
+
 // If DAC is not supported, provide some placeholders
 #ifndef SOC_DAC_SUPPORTED
   #define dac_continuous_enable(...)        (0xFF)
@@ -119,6 +124,9 @@ public:
       if (hz == (int)_rx_freq) { return true; }
     }
     _rx_freq = hz;
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+    S3boxSetRxSampleRate(hz);
+#endif
     
     return updateRxClockConfig();
   }
@@ -144,6 +152,9 @@ public:
     if (hz == (int) this->hertz) { return true; }
     this->hertz = hz;
     AddLog(LOG_LEVEL_DEBUG, "I2S: TRACE hertz set to %i by SetTxRate", hz);
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+    S3boxSetTxSampleRate(hz);
+#endif
     
     return updateTxClockConfig();
   }
