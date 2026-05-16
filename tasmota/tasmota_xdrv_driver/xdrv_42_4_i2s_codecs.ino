@@ -19,8 +19,7 @@
 */
 
 #ifdef ESP32
-#ifdef ESP32S3_BOX
-#include <driver/i2s.h>
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
 #include <es8156.h>
 #include <es8311.h>
 #include <es7243e.h>
@@ -135,7 +134,7 @@ void S3boxInit(void) {
     pinMode(S3BOX_APWR_GPIO , OUTPUT);
   }
 }
-#endif // ESP32S3_BOX
+#endif // ESP32S3_BOX || ESP32S3_RLCD_4_2
 
 
 #ifdef USE_W8960
