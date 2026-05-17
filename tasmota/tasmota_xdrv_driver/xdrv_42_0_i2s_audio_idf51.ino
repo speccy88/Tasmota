@@ -63,6 +63,8 @@ extern FS *ffsp;
 void S3boxAudioPower(uint8_t pwr);
 void S3boxInit(void);
 bool S3boxCodecReady(void);
+bool EnsureES8311Initialized(void);
+void S3boxCodecPeriodic(void);
 #endif
 
 constexpr int preallocateBufferSize = 16*1024;
@@ -671,10 +673,19 @@ int32_t I2SPrepareTx(void) {
 
   AddLog(LOG_LEVEL_DEBUG, "I2S: I2SPrepareTx out=%p", audio_i2s.out);
   if (!audio_i2s.out) { return I2S_ERR_OUTPUT_NOT_CONFIGURED; }
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+  if (!EnsureES8311Initialized()) {
+    AddLog(LOG_LEVEL_ERROR, "I2S: ES8311 init not ready before playback");
+  }
+#endif
 
   if (!audio_i2s.out->beginTx()) { return I2S_ERR_TX_FAILED; }
 
   audio_i2s.out->SetGain(((float)(audio_i2s.Settings->tx.gain + 1)/ 100.0));
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+  S3boxAudioPower(1);
+  AddLog(LOG_LEVEL_INFO, "I2S: amplifier GPIO46 -> ON before playback");
+#endif
 
   return I2S_OK;
 }
@@ -687,6 +698,11 @@ int32_t I2SPrepareTx(void) {
 // Returns `I2S_OK` if ok to record input or error code
 int32_t I2SPrepareRx(void) {
   if (!audio_i2s.in) return I2S_ERR_INPUT_NOT_CONFIGURED;
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+  if (!EnsureES8311Initialized()) {
+    AddLog(LOG_LEVEL_ERROR, "I2S: ES8311 init not ready before microphone start");
+  }
+#endif
 
   if (audio_i2s.Settings->sys.exclusive) {
     // TODO - deconfigure input driver
@@ -1054,6 +1070,9 @@ void CmndI2SMicRec(void) {
 }
 
 void I2sEventHandler(){
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+  S3boxCodecPeriodic();
+#endif
   if(audio_i2s_mp3.file_has_paused == true){
     audio_i2s_mp3.task_has_ended = false; //do not send ended event
     audio_i2s_mp3.file_has_paused = false;

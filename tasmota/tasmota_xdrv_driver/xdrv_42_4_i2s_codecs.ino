@@ -28,9 +28,15 @@
 
 
 #define S3BOX_APWR_GPIO 46
+#define RLCD_I2C_BUS    0  // Tasmota bus index 0 == "bus1" in console output
 
 static bool g_s3box_codec_ready = false;
 static bool g_s3box_amp_on = false;
+static bool g_es8311_present = false;
+static bool g_es8311_init_done = false;
+static bool g_es8311_init_pending = false;
+static bool g_es7210_init_done = false;
+static uint32_t g_es8311_last_init_attempt = 0;
 static uint8_t g_s3box_tx_sample = AUDIO_HAL_16K_SAMPLES;
 static uint8_t g_s3box_rx_sample = AUDIO_HAL_16K_SAMPLES;
 
@@ -48,19 +54,29 @@ static bool S3boxSampleFromHz(uint32_t hz, uint8_t &sample) {
   }
 }
 
+static TwoWire* S3boxGetWire(void) {
+  TwoWire& myWire = I2cGetWire(RLCD_I2C_BUS);
+  if (&myWire == nullptr) { return nullptr; }
+  return &myWire;
+}
+
 static bool ES8311_WriteReg(uint8_t reg, uint8_t value) {
-  Wire1.beginTransmission(ES8311_ADDR);
-  Wire1.write(reg);
-  Wire1.write(value);
-  return (0 == Wire1.endTransmission());
+  TwoWire *wire = S3boxGetWire();
+  if (!wire) { return false; }
+  wire->beginTransmission(ES8311_ADDR);
+  wire->write(reg);
+  wire->write(value);
+  return (0 == wire->endTransmission());
 }
 
 static int ES8311_ReadReg(uint8_t reg) {
-  Wire1.beginTransmission(ES8311_ADDR);
-  Wire1.write(reg);
-  if (0 != Wire1.endTransmission(false)) { return -1; }
-  if (1 != Wire1.requestFrom((uint8_t)ES8311_ADDR, (uint8_t)1)) { return -1; }
-  return Wire1.read();
+  TwoWire *wire = S3boxGetWire();
+  if (!wire) { return -1; }
+  wire->beginTransmission(ES8311_ADDR);
+  wire->write(reg);
+  if (0 != wire->endTransmission(false)) { return -1; }
+  if (1 != wire->requestFrom((uint8_t)ES8311_ADDR, (uint8_t)1)) { return -1; }
+  return wire->read();
 }
 
 static uint32_t ES8311_ApplyPostInit(void) {
@@ -152,16 +168,18 @@ void S3boxSetRxSampleRate(uint32_t hz) {
 // box lite dac init
 uint32_t ES8156_init() {
   uint32_t ret_val = ESP_OK;
+  TwoWire *wire = S3boxGetWire();
+  if (!wire) { return ESP_FAIL; }
 
-  if (I2cSetDevice(ES8156_ADDR, 1)) {
-    I2cSetActiveFound(ES8156_ADDR, "ES8156-I2C", 1);
+  if (I2cSetDevice(ES8156_ADDR, RLCD_I2C_BUS)) {
+    I2cSetActiveFound(ES8156_ADDR, "ES8156-I2C", RLCD_I2C_BUS);
     audio_hal_codec_config_t cfg = {
        .i2s_iface = {
          .mode = AUDIO_HAL_MODE_SLAVE,
          .bits = AUDIO_HAL_BIT_LENGTH_16BITS,
        }
     };
-    ret_val |= es8156_codec_init(&Wire1, &cfg);
+    ret_val |= es8156_codec_init(wire, &cfg);
     ret_val |= es8156_codec_set_voice_volume(75);
   }
   return ret_val;
@@ -170,9 +188,11 @@ uint32_t ES8156_init() {
 // box lite adc init
 uint32_t es7243e_init() {
     uint32_t ret_val = ESP_OK;
+    TwoWire *wire = S3boxGetWire();
+    if (!wire) { return ESP_FAIL; }
 
-    if (I2cSetDevice(ES7243_ADDR, 1)) {
-      I2cSetActiveFound(ES7243_ADDR, "ES7243e-I2C", 1);
+    if (I2cSetDevice(ES7243_ADDR, RLCD_I2C_BUS)) {
+      I2cSetActiveFound(ES7243_ADDR, "ES7243e-I2C", RLCD_I2C_BUS);
 
       audio_hal_codec_config_t cfg = {
         .i2s_iface = {
@@ -181,7 +201,7 @@ uint32_t es7243e_init() {
         }
       };
 
-      ret_val |= es7243e_adc_init(&Wire1, &cfg);
+      ret_val |= es7243e_adc_init(wire, &cfg);
     }
 
     return ret_val;
@@ -189,9 +209,11 @@ uint32_t es7243e_init() {
 // box adc init
 uint32_t es7210_init() {
   uint32_t ret_val = ESP_OK;
+  TwoWire *wire = S3boxGetWire();
+  if (!wire) { return ESP_FAIL; }
 
-  if (I2cSetDevice(ES7210_ADDR, 1)) {
-    I2cSetActiveFound(ES7210_ADDR, "ES7210-I2C", 1);
+  if (I2cSetDevice(ES7210_ADDR, RLCD_I2C_BUS)) {
+    I2cSetActiveFound(ES7210_ADDR, "ES7210-I2C", RLCD_I2C_BUS);
     audio_hal_codec_config_t cfg = {
         .adc_input = AUDIO_HAL_ADC_INPUT_ALL,
         .codec_mode = AUDIO_HAL_CODEC_MODE_ENCODE,
@@ -203,7 +225,7 @@ uint32_t es7210_init() {
         },
     };
 
-    ret_val |= es7210_adc_init(&Wire1, &cfg);
+    ret_val |= es7210_adc_init(wire, &cfg);
     ret_val |= es7210_adc_config_i2s(cfg.codec_mode, &cfg.i2s_iface);
     ret_val |= es7210_adc_set_gain((es7210_input_mics_t)(ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2), (es7210_gain_value_t) GAIN_37_5DB);
     ret_val |= es7210_adc_set_gain((es7210_input_mics_t)(ES7210_INPUT_MIC3 | ES7210_INPUT_MIC4), (es7210_gain_value_t) GAIN_0DB);
@@ -214,42 +236,56 @@ uint32_t es7210_init() {
 
 // box dac init
 uint32_t ES8311_init() {
-  uint32_t ret_val = ESP_OK;
+  uint32_t ret_val = ESP_FAIL;
 
-  if (I2cSetDevice(ES8311_ADDR, 1)) {
-    I2cSetActiveFound(ES8311_ADDR, "ES8311-I2C", 1);
-    audio_hal_codec_config_t cfg = {
-        .dac_output = AUDIO_HAL_DAC_OUTPUT_LINE1,
-        .codec_mode = AUDIO_HAL_CODEC_MODE_DECODE,
-        .i2s_iface = {
-          .mode = AUDIO_HAL_MODE_SLAVE,
-          .fmt = AUDIO_HAL_I2S_NORMAL,
-          .samples = AUDIO_HAL_16K_SAMPLES,
-          .bits = AUDIO_HAL_BIT_LENGTH_16BITS,
-        },
-    };
-
-    AddLog(LOG_LEVEL_INFO, "I2S: ES8311 detected at 0x%02X", ES8311_ADDR);
-    AddLog(LOG_LEVEL_INFO, "I2S: ES8311 init start (slave, Philips, 16-bit)");
-    ret_val |= es8311_codec_init(&Wire1, &cfg);
-    AddLog(LOG_LEVEL_INFO, "I2S: ES8311 reset/clock setup complete (ret=0x%08X)", ret_val);
-    ret_val |= es8311_codec_config_i2s(AUDIO_HAL_CODEC_MODE_BOTH, &cfg.i2s_iface);
-    ret_val |= es8311_set_bits_per_sample(cfg.i2s_iface.bits);
-    ret_val |= es8311_config_fmt((es_i2s_fmt_t)cfg.i2s_iface.fmt);
-    ret_val |= es8311_set_voice_mute(false);
-    ret_val |= es8311_codec_set_voice_volume(75);
-    ret_val |= es8311_set_mic_gain(ES8311_MIC_GAIN_24DB);
-    ret_val |= es8311_codec_ctrl_state(AUDIO_HAL_CODEC_MODE_BOTH, AUDIO_HAL_CTRL_START);
-    ret_val |= ES8311_ApplyPostInit();
-
-    int mute = 1;
-    es8311_get_voice_mute(&mute);
-    AddLog(LOG_LEVEL_INFO, "I2S: ES8311 DAC enabled, ADC enabled, mute=%d", mute);
-    AddLog(LOG_LEVEL_INFO, "I2S: ES8311 registers SYS0D=0x%02X SYS0E=0x%02X SYS12=0x%02X DAC31=0x%02X DAC32=0x%02X",
-      ES8311_ReadReg(ES8311_SYSTEM_REG0D), ES8311_ReadReg(ES8311_SYSTEM_REG0E),
-      ES8311_ReadReg(ES8311_SYSTEM_REG12), ES8311_ReadReg(ES8311_DAC_REG31), ES8311_ReadReg(ES8311_DAC_REG32));
-
+  TwoWire *wire = S3boxGetWire();
+  if (!wire) {
+    AddLog(LOG_LEVEL_ERROR, "I2S: ES8311 wire bus not ready");
+    return ret_val;
   }
+  if (!I2cSetDevice(ES8311_ADDR, RLCD_I2C_BUS)) {
+    g_es8311_present = false;
+    AddLog(LOG_LEVEL_ERROR, "I2S: ES8311 not detected at 0x%02X", ES8311_ADDR);
+    return ret_val;
+  }
+  g_es8311_present = true;
+  I2cSetActiveFound(ES8311_ADDR, "ES8311-I2C", RLCD_I2C_BUS);
+  audio_hal_codec_config_t cfg = {
+      .dac_output = AUDIO_HAL_DAC_OUTPUT_LINE1,
+      .codec_mode = AUDIO_HAL_CODEC_MODE_DECODE,
+      .i2s_iface = {
+        .mode = AUDIO_HAL_MODE_SLAVE,
+        .fmt = AUDIO_HAL_I2S_NORMAL,
+        .samples = AUDIO_HAL_16K_SAMPLES,
+        .bits = AUDIO_HAL_BIT_LENGTH_16BITS,
+      },
+  };
+
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 detected at 0x%02X", ES8311_ADDR);
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 init start (slave, Philips, 16-bit)");
+  ret_val = ESP_OK;
+  ret_val |= es8311_codec_init(wire, &cfg);
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 reset done");
+  ret_val |= es8311_codec_config_i2s(AUDIO_HAL_CODEC_MODE_BOTH, &cfg.i2s_iface);
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 clocks/I2S format configured");
+  ret_val |= es8311_set_bits_per_sample(cfg.i2s_iface.bits);
+  ret_val |= es8311_config_fmt((es_i2s_fmt_t)cfg.i2s_iface.fmt);
+  ret_val |= es8311_set_voice_mute(false);
+  ret_val |= es8311_codec_set_voice_volume(75);
+  ret_val |= es8311_set_mic_gain(ES8311_MIC_GAIN_24DB);
+  ret_val |= es8311_codec_ctrl_state(AUDIO_HAL_CODEC_MODE_BOTH, AUDIO_HAL_CTRL_START);
+  ret_val |= ES8311_ApplyPostInit();
+
+  int mute = 1;
+  es8311_get_voice_mute(&mute);
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 DAC enabled");
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 ADC enabled");
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 output unmuted (mute=%d)", mute);
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 volume set");
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 registers SYS0D=0x%02X SYS0E=0x%02X SYS12=0x%02X DAC31=0x%02X DAC32=0x%02X",
+    ES8311_ReadReg(ES8311_SYSTEM_REG0D), ES8311_ReadReg(ES8311_SYSTEM_REG0E),
+    ES8311_ReadReg(ES8311_SYSTEM_REG12), ES8311_ReadReg(ES8311_DAC_REG31), ES8311_ReadReg(ES8311_DAC_REG32));
+
   if (ret_val != ESP_OK) {
     AddLog(LOG_LEVEL_ERROR, "I2S: ES8311 init failed (0x%08X)", ret_val);
   } else {
@@ -258,22 +294,55 @@ uint32_t ES8311_init() {
   return ret_val;
 }
 
+bool EnsureES8311Initialized(void) {
+  if (g_es8311_init_done && g_es7210_init_done) {
+    return true;
+  }
+
+  uint32_t now = millis();
+  if ((now - g_es8311_last_init_attempt) < 1000) {
+    return false;
+  }
+  g_es8311_last_init_attempt = now;
+
+  if (!TasmotaGlobal.i2c_enabled[RLCD_I2C_BUS]) {
+    g_es8311_init_pending = true;
+    AddLog(LOG_LEVEL_INFO, "I2S: ES8311 init deferred, I2C bus1 not ready");
+    return false;
+  }
+
+  AddLog(LOG_LEVEL_INFO, "I2S: initializing ES8311 codec on I2C bus1 addr 0x%02X", ES8311_ADDR);
+
+  ES8156_init();
+  es7243e_init();
+  uint32_t es8311_ret = ES8311_init();
+  uint32_t es7210_ret = es7210_init();
+
+  g_es8311_init_done = (es8311_ret == ESP_OK);
+  g_es7210_init_done = (es7210_ret == ESP_OK);
+  g_s3box_codec_ready = g_es8311_init_done && g_es7210_init_done;
+  g_es8311_init_pending = !g_s3box_codec_ready;
+
+  AddLog(LOG_LEVEL_INFO, "I2S: codec init summary ES8311=0x%08X ES7210=0x%08X ready=%d", es8311_ret, es7210_ret, g_s3box_codec_ready);
+
+  return g_s3box_codec_ready;
+}
+
+void S3boxCodecPeriodic(void) {
+  if (!g_es8311_init_pending) { return; }
+  if ((millis() - g_es8311_last_init_attempt) < 2000) { return; }
+  EnsureES8311Initialized();
+}
+
 void S3boxInit(void) {
   pinMode(S3BOX_APWR_GPIO, OUTPUT);
   S3boxAudioPower(0);
 
-  if (TasmotaGlobal.i2c_enabled[1]) {
-    // box lite
-    ES8156_init();
-    es7243e_init();
-    // box full
-    uint32_t es8311_ret = ES8311_init();
-    uint32_t es7210_ret = es7210_init();
-    g_s3box_codec_ready = (es8311_ret == ESP_OK) && (es7210_ret == ESP_OK);
-    AddLog(LOG_LEVEL_INFO, "I2S: codec init summary ES8311=0x%08X ES7210=0x%08X ready=%d", es8311_ret, es7210_ret, g_s3box_codec_ready);
-  } else {
-    AddLog(LOG_LEVEL_INFO, "I2S: codec init skipped (I2C bus1 disabled)");
-  }
+  g_es8311_init_pending = true;
+  g_es8311_init_done = false;
+  g_es7210_init_done = false;
+  g_s3box_codec_ready = false;
+  EnsureES8311Initialized();
 }
 #endif // ESP32S3_BOX || ESP32S3_RLCD_4_2
 
@@ -283,10 +352,11 @@ void S3boxInit(void) {
 #include <wm8960.h>
 
 void W8960_Init1(void) {
-  if (TasmotaGlobal.i2c_enabled[1]) {
-    if (I2cSetDevice(W8960_ADDR, 1)) {
-      I2cSetActiveFound(W8960_ADDR, "W8960-I2C", 1);
-      W8960_Init(&Wire1);
+  TwoWire *wire = S3boxGetWire();
+  if (wire && TasmotaGlobal.i2c_enabled[RLCD_I2C_BUS]) {
+    if (I2cSetDevice(W8960_ADDR, RLCD_I2C_BUS)) {
+      I2cSetActiveFound(W8960_ADDR, "W8960-I2C", RLCD_I2C_BUS);
+      W8960_Init(wire);
     }
   }
 }
