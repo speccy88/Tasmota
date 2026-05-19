@@ -26,32 +26,38 @@ class TasmoClawUtil
     if t == 'string' return self.json_quote(v) end
     if t == 'bool' return v ? 'true' : 'false' end
     if t == 'real' || t == 'int' return str(v) end
-    if t == 'list' return self.json_encode_list_simple(v) end
-    if t == 'map' return self.json_encode_map_simple(v) end
+    if t == 'list'
+      var out = '['
+      var first = true
+      for item:v
+        if !first out += ',' end
+        out += self.json_encode(item)
+        first = false
+      end
+      return out + ']'
+    end
+    if t == 'map'
+      var out2 = '{'
+      var first2 = true
+      for k:v.keys()
+        if !first2 out2 += ',' end
+        out2 += self.json_quote(str(k)) + ':' + self.json_encode(v[k])
+        first2 = false
+      end
+      return out2 + '}'
+    end
     return self.json_quote(str(v))
   end
 
-  def json_encode_list_simple(l)
-    var out = '['
-    var first = true
-    for v:l
-      if !first out += ',' end
-      out += self.json_encode(v)
-      first = false
-    end
-    return out + ']'
-  end
-
-  def json_encode_map_simple(m)
-    var out = '{'
-    var first = true
-    for k:v in m
-      if !first out += ',' end
-      out += self.json_quote(str(k)) + ':' + self.json_encode(v)
-      first = false
-    end
-    return out + '}'
+  def preview(s, limit)
+    if s == nil return '' end
+    if size(s) <= limit return s end
+    return s[0..limit-1]
   end
 end
 
-var tasmoclaw_util = TasmoClawUtil()
+var _util = TasmoClawUtil()
+var tasmoclaw_util = module("tasmoclaw_util")
+tasmoclaw_util.json_encode = def(v) return _util.json_encode(v) end
+tasmoclaw_util.preview = def(s, limit) return _util.preview(s, limit) end
+return tasmoclaw_util

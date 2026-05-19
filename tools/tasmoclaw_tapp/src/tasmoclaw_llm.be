@@ -1,12 +1,23 @@
+import json
+import string
 import tasmoclaw_util
 
 class TasmoClawLLM
   def call_chat(cfg, messages)
-    if cfg['api_key']=='' return {'ok':false,'error':'Missing API key'} end
-    if cfg['api_url']=='' return {'ok':false,'error':'Missing api_url'} end
-    if cfg['model']=='' return {'ok':false,'error':'Missing model'} end
-    var payload = {'model':cfg['model'],'messages':messages,'temperature':cfg['temperature'],'max_tokens':cfg['max_tokens'],'stream':false,'thinking':{'type':cfg['thinking']}}
-    if cfg['thinking']=='enabled' payload['reasoning_effort']=cfg['reasoning_effort'] end
+    if cfg.find('api_key') == nil || cfg['api_key'] == '' return {'ok':false,'error':'Missing DeepSeek API key'} end
+    if cfg.find('api_url') == nil || cfg['api_url'] == '' return {'ok':false,'error':'Missing api_url'} end
+    if cfg.find('model') == nil || cfg['model'] == '' return {'ok':false,'error':'Missing model'} end
+    var max_tokens = cfg.find('max_tokens')
+    if max_tokens == nil max_tokens = 900 end
+    var payload = {'model':cfg['model'],'messages':messages,'temperature':cfg['temperature'],'max_tokens':max_tokens,'stream':false}
+    var thinking = cfg.find('thinking')
+    if thinking == nil thinking = 'disabled' end
+    if thinking == 'enabled'
+      payload['thinking'] = {'type':'enabled'}
+      payload['reasoning_effort'] = cfg.find('reasoning_effort') == nil ? 'high' : cfg['reasoning_effort']
+    elif thinking == 'disabled'
+      payload['thinking'] = {'type':'disabled'}
+    end
     var cl=nil
     try
       cl = webclient()
@@ -32,16 +43,19 @@ class TasmoClawLLM
   end
   def parse_response(body)
     try
-      import json
       var o = json.load(body)
-      return {'ok':true,'content':o['choices'][0]['message']['content'],'raw':o}
+      if o.find('choices') == nil || size(o['choices']) == 0 return {'ok':false,'error':'DeepSeek response missing choices'} end
+      var msg = o['choices'][0]['message']
+      if msg == nil || msg.find('content') == nil return {'ok':false,'error':'DeepSeek response missing message content'} end
+      return {'ok':true,'content':msg['content'],'raw':o}
     except .. as e,m
+      return {'ok':false,'error':'JSON parse failure: '+str(m),'body':tasmoclaw_util.preview(body, 240)}
     end
-    var s='"content":"'
-    var i=string.find(body,s)
-    if i<0 return {'ok':false,'error':'JSON parse failure'} end
-    var start=i+size(s); var j=string.find(body,'"',start)
-    if j<0 return {'ok':false,'error':'JSON parse failure'} end
-    return {'ok':true,'content':string.slice(body,start,j)}
   end
 end
+
+var tasmoclaw_llm = module("tasmoclaw_llm")
+tasmoclaw_llm.create = def()
+  return TasmoClawLLM()
+end
+return tasmoclaw_llm

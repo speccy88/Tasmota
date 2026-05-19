@@ -1,0 +1,186 @@
+import json
+import path
+import string
+
+class TrmnlDashboard
+  static DEFAULT_API_URL = "https://trmnl.com/api/display"
+  static CONFIG_FILE = "/trmnl_config.json"
+  static FRAME_CURRENT = "/trmnl_frame.png"
+  static FRAME_NEXT = "/trmnl_frame.next"
+  static ROTATION = 270
+  static WIDTH = 800
+  static HEIGHT = 600
+  static START_DELAY_MS = 5000
+  static MIN_REFRESH_S = 60
+  static DEFAULT_REFRESH_S = 300
+
+  var next_at
+  var busy
+  var refresh_s
+  var api_url
+  var send_auth
+  var trmnl_id
+  var trmnl_token
+
+  def init()
+    self.busy = false
+    self.refresh_s = self.DEFAULT_REFRESH_S
+    self.api_url = self.DEFAULT_API_URL
+    self.send_auth = true
+    self.next_at = tasmota.millis(self.START_DELAY_MS)
+    if global.trmnl_dashboard
+      global.trmnl_dashboard.stop()
+    end
+    tasmota.add_driver(global.trmnl_dashboard := self)
+    tasmota.log("TRMNL: dashboard driver armed", 2)
+  end
+
+  def stop()
+    tasmota.remove_driver(self)
+  end
+
+  def remove_file(name)
+    try
+      if path.exists(name)
+        path.remove(name)
+      end
+    except .. as e, m
+      tasmota.log(format("TRMNL: remove %s failed: %s %s", name, e, m), 2)
+    end
+  end
+
+  def schedule(seconds)
+    seconds = int(seconds)
+    if seconds < self.MIN_REFRESH_S
+      seconds = self.MIN_REFRESH_S
+    end
+    self.refresh_s = seconds
+    self.next_at = tasmota.millis(seconds * 1000)
+    tasmota.log(format("TRMNL: next refresh in %d seconds", seconds), 2)
+  end
+
+  def every_50ms()
+    if self.busy || self.next_at == nil
+      return
+    end
+    if tasmota.time_reached(self.next_at)
+      self.next_at = nil
+      self.fetch()
+    end
+  end
+
+  def load_config()
+    if !path.exists(self.CONFIG_FILE)
+      raise "config_error", self.CONFIG_FILE + " is missing"
+    end
+    var f = open(self.CONFIG_FILE, "r")
+    var cfg = json.load(f.read())
+    f.close()
+    if cfg == nil
+      raise "config_error", self.CONFIG_FILE + " is invalid json"
+    end
+    var cfg_api_url = cfg.find("api_url")
+    if cfg_api_url != nil
+      self.api_url = cfg_api_url
+    else
+      self.api_url = self.DEFAULT_API_URL
+    end
+    var cfg_send_auth = cfg.find("send_auth")
+    if cfg_send_auth != nil
+      self.send_auth = cfg_send_auth
+    else
+      self.send_auth = true
+    end
+    if self.send_auth
+      self.trmnl_id = cfg.find("id")
+      self.trmnl_token = cfg.find("token")
+    else
+      self.trmnl_id = nil
+      self.trmnl_token = nil
+    end
+    if self.send_auth && (self.trmnl_id == nil || self.trmnl_token == nil)
+      raise "config_error", self.CONFIG_FILE + " must contain id and token"
+    end
+  end
+
+  def display_headers(client)
+    if self.send_auth
+      client.add_header("ID", self.trmnl_id)
+      client.add_header("Access-Token", self.trmnl_token)
+    end
+    client.add_header("Refresh-Rate", str(self.refresh_s))
+    client.add_header("Battery-Voltage", "4.2")
+    client.add_header("FW-Version", "tasmota-lvgl-trmnl")
+    client.add_header("RSSI", "100")
+    client.add_header("Width", str(self.WIDTH))
+    client.add_header("Height", str(self.HEIGHT))
+  end
+
+  def fetch()
+    self.busy = true
+    var next_refresh = self.DEFAULT_REFRESH_S
+    try
+      self.load_config()
+      var api = webclient()
+      api.set_follow_redirects(true)
+      api.set_timeouts(20000, 5000)
+      self.display_headers(api)
+      api.begin(self.api_url)
+      var code = api.GET()
+      if code != 200
+        api.close()
+        raise "connection_error", format("display api status %d", code)
+      end
+      var body = api.get_string()
+      api.close()
+
+      var info = json.load(body)
+      if info == nil
+        raise "value_error", "display api returned invalid json"
+      end
+      var image_url = info.find("image_url")
+      if image_url == nil
+        raise "value_error", "display api response has no image_url"
+      end
+      var api_refresh = info.find("refresh_rate")
+      if api_refresh != nil
+        next_refresh = int(api_refresh)
+      end
+      if string.startswith(image_url, "https://trmnl.s3.")
+        image_url = "http://" + image_url[8..]
+      end
+
+      self.remove_file(self.FRAME_NEXT)
+      var img = webclient()
+      img.set_follow_redirects(true)
+      img.set_timeouts(20000, 5000)
+      img.begin(image_url)
+      code = img.GET()
+      if code != 200
+        img.close()
+        raise "connection_error", format("image status %d", code)
+      end
+      var written = img.write_file(self.FRAME_NEXT)
+      img.close()
+      if written <= 0
+        raise "io_error", "image write failed"
+      end
+
+      lv.start()
+      var rendered = lv.trmnl_show_png(self.FRAME_NEXT, self.ROTATION)
+      self.remove_file(self.FRAME_CURRENT)
+      if !path.rename(self.FRAME_NEXT, self.FRAME_CURRENT)
+        raise "io_error", "frame rename failed"
+      end
+      tasmota.log(format("TRMNL: displayed %s from %d bytes", rendered, written), 2)
+    except .. as e, m
+      tasmota.log(format("TRMNL: refresh failed: %s %s", e, m), 2)
+      self.remove_file(self.FRAME_NEXT)
+      next_refresh = self.MIN_REFRESH_S
+    end
+    self.busy = false
+    self.schedule(next_refresh)
+  end
+end
+
+TrmnlDashboard()
