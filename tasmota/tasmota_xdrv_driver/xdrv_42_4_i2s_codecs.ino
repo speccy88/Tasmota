@@ -40,6 +40,23 @@ static uint32_t g_es8311_last_init_attempt = 0;
 static uint8_t g_s3box_tx_sample = AUDIO_HAL_16K_SAMPLES;
 static uint8_t g_s3box_rx_sample = AUDIO_HAL_16K_SAMPLES;
 
+static uint8_t S3boxCodecVolume(void) {
+#if defined(ESP32S3_RLCD_4_2)
+  if (audio_i2s.Settings) {
+    return (audio_i2s.Settings->sys.codec_volume <= 100) ? audio_i2s.Settings->sys.codec_volume : 100;
+  }
+#endif
+  return RLCD_ES8311_DEFAULT_VOLUME;
+}
+
+void S3boxApplyCodecVolume(void) {
+  if (!g_es8311_present) { return; }
+  uint8_t volume = S3boxCodecVolume();
+  es8311_codec_set_voice_volume(volume);
+  ES8311_WriteReg(ES8311_DAC_REG32, (volume * 255) / 100);
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 volume set to %u", volume);
+}
+
 static bool S3boxSampleFromHz(uint32_t hz, uint8_t &sample) {
   switch (hz) {
     case 8000: sample = AUDIO_HAL_08K_SAMPLES; return true;
@@ -103,7 +120,7 @@ static uint32_t ES8311_ApplyPostInit(void) {
   } else {
     ret_val |= ESP_FAIL;
   }
-  ret_val |= ES8311_WriteReg(ES8311_DAC_REG32, 0xC0) ? ESP_OK : ESP_FAIL;     // DAC digital volume
+  ret_val |= ES8311_WriteReg(ES8311_DAC_REG32, (S3boxCodecVolume() * 255) / 100) ? ESP_OK : ESP_FAIL; // DAC digital volume
   return ret_val;
 }
 
@@ -164,7 +181,7 @@ void S3boxForcePlaybackCodec(uint32_t hz) {
   ret_val |= es8311_set_bits_per_sample(cfg.i2s_iface.bits);
   ret_val |= es8311_config_fmt((es_i2s_fmt_t)cfg.i2s_iface.fmt);
   ret_val |= es8311_set_voice_mute(false);
-  ret_val |= es8311_codec_set_voice_volume(100);
+  ret_val |= es8311_codec_set_voice_volume(S3boxCodecVolume());
   ret_val |= es8311_codec_ctrl_state(AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
   ret_val |= ES8311_ApplyPostInit();
   AddLog((ret_val == ESP_OK) ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "I2S: ES8311 forced playback path at %u Hz result=0x%08X", hz, ret_val);
@@ -320,7 +337,7 @@ uint32_t ES8311_init() {
   ret_val |= es8311_set_bits_per_sample(cfg.i2s_iface.bits);
   ret_val |= es8311_config_fmt((es_i2s_fmt_t)cfg.i2s_iface.fmt);
   ret_val |= es8311_set_voice_mute(false);
-  ret_val |= es8311_codec_set_voice_volume(100);
+  ret_val |= es8311_codec_set_voice_volume(S3boxCodecVolume());
   ret_val |= es8311_set_mic_gain(ES8311_MIC_GAIN_24DB);
   ret_val |= es8311_codec_ctrl_state(AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
   ret_val |= ES8311_ApplyPostInit();
@@ -330,7 +347,7 @@ uint32_t ES8311_init() {
   AddLog(LOG_LEVEL_INFO, "I2S: ES8311 DAC enabled");
   AddLog(LOG_LEVEL_INFO, "I2S: ES8311 ADC enabled");
   AddLog(LOG_LEVEL_INFO, "I2S: ES8311 output unmuted (mute=%d)", mute);
-  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 volume set");
+  AddLog(LOG_LEVEL_INFO, "I2S: ES8311 volume set to %u", S3boxCodecVolume());
   AddLog(LOG_LEVEL_INFO, "I2S: ES8311 registers SYS0D=0x%02X SYS0E=0x%02X SYS12=0x%02X DAC31=0x%02X DAC32=0x%02X",
     ES8311_ReadReg(ES8311_SYSTEM_REG0D), ES8311_ReadReg(ES8311_SYSTEM_REG0E),
     ES8311_ReadReg(ES8311_SYSTEM_REG12), ES8311_ReadReg(ES8311_DAC_REG31), ES8311_ReadReg(ES8311_DAC_REG32));

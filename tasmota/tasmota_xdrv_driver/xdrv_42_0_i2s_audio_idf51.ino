@@ -61,6 +61,10 @@
 
 #define AUDIO_CONFIG_FILENAME "/.drvset042"
 
+#if defined(ESP32S3_RLCD_4_2)
+static constexpr int16_t kRlcdBeepAmplitude = 7000;
+#endif
+
 extern FS *ufsp;
 extern FS *ffsp;
 
@@ -72,6 +76,9 @@ bool EnsureES8311Initialized(void);
 void S3boxDumpCodec(const char *tag);
 void S3boxForcePlaybackCodec(uint32_t hz);
 void S3boxCodecPeriodic(void);
+#if defined(ESP32S3_RLCD_4_2)
+void S3boxApplyCodecVolume(void);
+#endif
 #endif
 
 constexpr int preallocateBufferSize = 16*1024;
@@ -285,7 +292,7 @@ static bool RlcdFactoryBeep(uint32_t duration_ms, uint32_t tone_hz) {
     uint32_t frames = total_frames - frame_index;
     if (frames > 128) { frames = 128; }
     for (uint32_t i = 0; i < frames; i++) {
-      int16_t value = (((frame_index + i) / samples_per_half_period) & 1) ? 24000 : -24000;
+      int16_t value = (((frame_index + i) / samples_per_half_period) & 1) ? kRlcdBeepAmplitude : -kRlcdBeepAmplitude;
       pcm[(i * 2)] = value;
       pcm[(i * 2) + 1] = value;
     }
@@ -380,7 +387,7 @@ static bool RlcdLegacyBeep(uint32_t duration_ms, uint32_t tone_hz) {
     uint32_t frames = total_frames - frame_index;
     if (frames > 128) { frames = 128; }
     for (uint32_t i = 0; i < frames; i++) {
-      int16_t value = (((frame_index + i) / samples_per_half_period) & 1) ? 24000 : -24000;
+      int16_t value = (((frame_index + i) / samples_per_half_period) & 1) ? kRlcdBeepAmplitude : -kRlcdBeepAmplitude;
       pcm[(i * 2)] = value;
       pcm[(i * 2) + 1] = value;
     }
@@ -587,6 +594,10 @@ void CmndI2SConfig(void) {
       cfg->sys.ws_inv[0] = sys.getUInt(PSTR("WsInv0"), cfg->sys.ws_inv[0]);
       cfg->sys.ws_inv[1] = sys.getUInt(PSTR("WsInv1"), cfg->sys.ws_inv[1]);
       cfg->sys.mp3_preallocate = sys.getUInt(PSTR("Mp3Preallocate"), cfg->sys.mp3_preallocate);
+#if defined(ESP32S3_RLCD_4_2)
+      cfg->sys.codec_volume = sys.getUInt(PSTR("CodecVolume"), cfg->sys.codec_volume);
+      if (cfg->sys.codec_volume > 100) { cfg->sys.codec_volume = 100; }
+#endif
     }
 
     JsonParserToken tx_tk = root["Tx"];
@@ -626,6 +637,9 @@ void CmndI2SConfig(void) {
       cfg->rx.dma_desc_num = rx.getUInt(PSTR("DMADesc"), cfg->rx.dma_desc_num);
     }
     I2SSettingsSave(AUDIO_CONFIG_FILENAME);
+#if defined(ESP32S3_RLCD_4_2)
+    S3boxApplyCodecVolume();
+#endif
   }
 
   float mic_gain = ((float)cfg->rx.gain) / 16;
@@ -644,6 +658,9 @@ void CmndI2SConfig(void) {
                     "\"WsInv0\":%d,"
                     "\"WsInv1\":%d,"
                     "\"Mp3Preallocate\":%d"
+#if defined(ESP32S3_RLCD_4_2)
+                    ",\"CodecVolume\":%d"
+#endif
                   "},"
                   "\"Tx\":{"
                     "\"SampleRate\":%d,"
@@ -686,6 +703,9 @@ void CmndI2SConfig(void) {
                   cfg->sys.ws_inv[0],
                   cfg->sys.ws_inv[1],
                   cfg->sys.mp3_preallocate,
+#if defined(ESP32S3_RLCD_4_2)
+                  cfg->sys.codec_volume,
+#endif
                   //
                   cfg->tx.sample_rate,
                   cfg->tx.gain,
@@ -768,6 +788,13 @@ void I2SSettingsLoad(const char * config_filename, bool erase) {
       audio_i2s.Settings = new tI2SSettings();
       I2SSettingsSave(config_filename);
     }
+#if defined(ESP32S3_RLCD_4_2)
+    else if (audio_i2s.Settings->sys.version < AUDIO_SETTINGS_VERSION) {
+      audio_i2s.Settings->sys.codec_volume = RLCD_ES8311_DEFAULT_VOLUME;
+      audio_i2s.Settings->sys.version = AUDIO_SETTINGS_VERSION;
+      I2SSettingsSave(config_filename);
+    }
+#endif
   }
   else {
     // File system not ready: No flash space reserved for file system
@@ -1379,7 +1406,7 @@ void CmndI2SBeep(void) {
 	    if (frames > 64) { frames = 64; }
 
 	    for (uint32_t i = 0; i < frames; i++) {
-	      int16_t value = (((frame_index + i) / samples_per_half_period) & 1) ? 20000 : -20000;
+	      int16_t value = (((frame_index + i) / samples_per_half_period) & 1) ? kRlcdBeepAmplitude : -kRlcdBeepAmplitude;
         for (uint32_t slot = 0; slot < total_slot; slot++) {
           pcm[(i * total_slot) + slot] = 0;
         }
@@ -1436,7 +1463,7 @@ void CmndI2SBeep(void) {
   AddLog(LOG_LEVEL_INFO, "I2S: beep %u ms at %u Hz sample_rate=%u", duration_ms, tone_hz, sample_rate);
   while (sample_index < total_samples) {
     int16_t sample[2];
-    int16_t value = ((sample_index / fallback_samples_per_half_period) & 1) ? 18000 : -18000;
+    int16_t value = ((sample_index / fallback_samples_per_half_period) & 1) ? kRlcdBeepAmplitude : -kRlcdBeepAmplitude;
     sample[0] = value;
     sample[1] = value;
     while (!audio_i2s.out->ConsumeSample(sample)) {

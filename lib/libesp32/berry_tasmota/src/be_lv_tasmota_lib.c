@@ -19,6 +19,7 @@ extern int lv0_screenshot(bvm *vm);
 extern int lv0_set_paint_cb(bvm *vm);
 extern int lv0_set_stream_cb(bvm *vm);
 extern int lv0_load_freetype_font(bvm *vm);
+extern int lv0_trmnl_show_png(bvm *vm);
 
 #include "solidify/solidified_lv_tasmota.h"
 
@@ -41,6 +42,7 @@ module lv_tasmota (scope: global, strings: weak) {
     screenshot, func(lv0_screenshot)
     set_paint_cb, func(lv0_set_paint_cb)
     set_stream_cb, func(lv0_set_stream_cb)
+    trmnl_show_png, func(lv0_trmnl_show_png)
 
     load_freetype_font, func(lv0_load_freetype_font)
 }

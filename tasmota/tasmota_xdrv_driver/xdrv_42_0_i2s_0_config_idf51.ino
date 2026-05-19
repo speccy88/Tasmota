@@ -69,7 +69,8 @@ enum : uint8_t {
 };
 
 #define I2S_SLOTS   2
-#define AUDIO_SETTINGS_VERSION  2
+#define AUDIO_SETTINGS_VERSION  3
+#define RLCD_ES8311_DEFAULT_VOLUME  35
 
 typedef struct{
   struct{
@@ -85,7 +86,12 @@ typedef struct{
     bool      bclk_inv[I2S_SLOTS] = {0};  // B07-08 - invert bclk
     bool      ws_inv[I2S_SLOTS] = {0};    // B09-0A - invert ws
     uint8_t   mp3_preallocate = 0;    // B0B - will be ignored without PS-RAM
+#if defined(ESP32S3_RLCD_4_2)
+    uint8_t   codec_volume = RLCD_ES8311_DEFAULT_VOLUME;  // B0C - ES8311 DAC volume, 0..100
+    uint8_t   spare[3];              // B0D-0F
+#else
     uint8_t   spare[4];              // B0C-0F
+#endif
   } sys;
   struct {
     uint32_t sample_rate = 16000;   // B00-03

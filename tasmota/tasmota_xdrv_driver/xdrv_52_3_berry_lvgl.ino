@@ -22,6 +22,7 @@
 #ifdef USE_LVGL
 
 #include <berry.h>
+#include <limits.h>
 
 // silence warning with Core3
 #pragma GCC diagnostic push
@@ -29,8 +30,13 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-enum-enum-conversion"
 #endif
 #include "lvgl.h"
+#ifdef USE_LVGL_PNG_DECODER
+  #ifndef LODEPNG_NO_COMPILE_CPP
+    #define LODEPNG_NO_COMPILE_CPP
+  #endif
+  #include "src/libs/lodepng/lodepng.h"
+#endif
 #pragma GCC diagnostic pop
-
 #include "be_mapping.h"
 #include "be_ctypes.h"
 #include "lv_berry.h"
@@ -119,6 +125,544 @@ extern "C" {
 
 }
 
+#ifdef USE_LVGL_PNG_DECODER
+extern "C" void lodepng_free(void * ptr);
+#endif // USE_LVGL_PNG_DECODER
+
+/*********************************************************************************************\
+ * TRMNL 1-bit PNG display helper
+\*********************************************************************************************/
+struct trmnl_png_i1_t {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t stride = 0;
+  uint8_t * rows = nullptr;
+  bool rows_from_lodepng = false;
+};
+
+static lv_obj_t * lv_trmnl_screen = nullptr;
+static lv_draw_buf_t * lv_trmnl_draw_buf = nullptr;
+
+static void trmnl_free_png(void * png_ptr);
+static bool trmnl_source_bit(const void * src_ptr, uint32_t x, uint32_t y);
+static void trmnl_map_pixel(uint32_t dx, uint32_t dy, uint32_t dst_w, uint32_t dst_h, uint32_t src_w, uint32_t src_h, int32_t rotation, uint32_t * sx, uint32_t * sy);
+
+static uint32_t trmnl_read_be32(const uint8_t * p) {
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+static void trmnl_set_error(char * err, size_t err_len, const char * msg) {
+  if (err && err_len) {
+    snprintf(err, err_len, "%s", msg);
+  }
+}
+
+static bool trmnl_is_pbm_ws(uint8_t ch) {
+  return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+}
+
+static void trmnl_release_lvgl(void) {
+  if (lv_trmnl_screen) {
+    lv_obj_delete(lv_trmnl_screen);
+    lv_trmnl_screen = nullptr;
+  }
+  if (lv_trmnl_draw_buf) {
+    lv_draw_buf_destroy(lv_trmnl_draw_buf);
+    lv_trmnl_draw_buf = nullptr;
+  }
+}
+
+static void trmnl_free_png(void * png_ptr) {
+  trmnl_png_i1_t * png = (trmnl_png_i1_t*)png_ptr;
+  if (png && png->rows) {
+    if (png->rows_from_lodepng) {
+#ifdef USE_LVGL_PNG_DECODER
+      lodepng_free(png->rows);
+#else
+      free(png->rows);
+#endif
+    } else {
+      free(png->rows);
+    }
+    png->rows = nullptr;
+  }
+}
+
+static const uint8_t * trmnl_skip_pbm_ws(const uint8_t * p, const uint8_t * end) {
+  while (p < end) {
+    if (*p == '#') {
+      while (p < end && *p != '\n' && *p != '\r') { p++; }
+    } else if (trmnl_is_pbm_ws(*p)) {
+      p++;
+    } else {
+      break;
+    }
+  }
+  return p;
+}
+
+static bool trmnl_read_pbm_uint(const uint8_t ** cursor, const uint8_t * end, uint32_t * value) {
+  const uint8_t * p = trmnl_skip_pbm_ws(*cursor, end);
+  if (p >= end || *p < '0' || *p > '9') { return false; }
+  uint32_t v = 0;
+  while (p < end && *p >= '0' && *p <= '9') {
+    uint32_t digit = *p - '0';
+    if (v > ((UINT32_MAX - digit) / 10)) { return false; }
+    v = (v * 10) + digit;
+    p++;
+  }
+  *cursor = p;
+  *value = v;
+  return true;
+}
+
+static bool trmnl_load_pbm_p4(const uint8_t * data, size_t data_size, void * out_ptr, char * err, size_t err_len) {
+  trmnl_png_i1_t * out = (trmnl_png_i1_t*)out_ptr;
+  if (data_size < 4 || data[0] != 'P' || data[1] != '4') {
+    trmnl_set_error(err, err_len, "not a binary PBM");
+    return false;
+  }
+
+  const uint8_t * cursor = data + 2;
+  const uint8_t * end = data + data_size;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  if (!trmnl_read_pbm_uint(&cursor, end, &width) || !trmnl_read_pbm_uint(&cursor, end, &height)) {
+    trmnl_set_error(err, err_len, "bad PBM header");
+    return false;
+  }
+  if (cursor >= end || !trmnl_is_pbm_ws(*cursor)) {
+    trmnl_set_error(err, err_len, "bad PBM raster separator");
+    return false;
+  }
+  cursor++;
+  if (width == 0 || height == 0 || width > 2048 || height > 2048) {
+    trmnl_set_error(err, err_len, "unsupported PBM dimensions");
+    return false;
+  }
+
+  uint32_t stride = (width + 7) / 8;
+  size_t rows_size = (size_t)stride * height;
+  if ((size_t)(end - cursor) < rows_size) {
+    trmnl_set_error(err, err_len, "short PBM raster");
+    return false;
+  }
+
+  uint8_t * rows = (uint8_t*)special_malloc(rows_size + 4);
+  if (!rows) {
+    trmnl_set_error(err, err_len, "cannot allocate PBM rows");
+    return false;
+  }
+  memcpy(rows, cursor, rows_size);
+  out->width = width;
+  out->height = height;
+  out->stride = stride;
+  out->rows = rows;
+  out->rows_from_lodepng = false;
+  return true;
+}
+
+static bool trmnl_load_pbm_p4_file(File &f, size_t file_size, void * out_ptr, char * err, size_t err_len) {
+  uint8_t header[256];
+  size_t header_size = file_size < sizeof(header) ? file_size : sizeof(header);
+  if (!f.seek(0) || f.read(header, header_size) != header_size) {
+    trmnl_set_error(err, err_len, "cannot read PBM header");
+    return false;
+  }
+  if (header_size < 4 || header[0] != 'P' || header[1] != '4') {
+    trmnl_set_error(err, err_len, "not a binary PBM");
+    return false;
+  }
+
+  trmnl_png_i1_t * out = (trmnl_png_i1_t*)out_ptr;
+  const uint8_t * cursor = header + 2;
+  const uint8_t * end = header + header_size;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  if (!trmnl_read_pbm_uint(&cursor, end, &width) || !trmnl_read_pbm_uint(&cursor, end, &height)) {
+    trmnl_set_error(err, err_len, "bad PBM header");
+    return false;
+  }
+  if (cursor >= end || !trmnl_is_pbm_ws(*cursor)) {
+    trmnl_set_error(err, err_len, "bad PBM raster separator");
+    return false;
+  }
+  cursor++;
+  if (width == 0 || height == 0 || width > 2048 || height > 2048) {
+    trmnl_set_error(err, err_len, "unsupported PBM dimensions");
+    return false;
+  }
+
+  uint32_t stride = (width + 7) / 8;
+  size_t rows_size = (size_t)stride * height;
+  size_t raster_offset = cursor - header;
+  if (file_size < (raster_offset + rows_size)) {
+    trmnl_set_error(err, err_len, "short PBM raster");
+    return false;
+  }
+
+  uint8_t * rows = (uint8_t*)special_malloc(rows_size + 4);
+  if (!rows) {
+    trmnl_set_error(err, err_len, "cannot allocate PBM rows");
+    return false;
+  }
+  if (!f.seek(raster_offset) || f.read(rows, rows_size) != rows_size) {
+    free(rows);
+    trmnl_set_error(err, err_len, "cannot read PBM raster");
+    return false;
+  }
+
+  out->width = width;
+  out->height = height;
+  out->stride = stride;
+  out->rows = rows;
+  out->rows_from_lodepng = false;
+  return true;
+}
+
+static bool trmnl_append_idat(uint8_t ** idat, size_t * idat_size, const uint8_t * chunk, size_t chunk_size) {
+  if (!idat || !idat_size || !chunk) { return false; }
+  if (chunk_size > (SIZE_MAX - *idat_size)) { return false; }
+
+  size_t new_size = *idat_size + chunk_size;
+  uint8_t * next = (uint8_t*)realloc(*idat, new_size);
+  if (!next) { return false; }
+  memcpy(next + *idat_size, chunk, chunk_size);
+  *idat = next;
+  *idat_size = new_size;
+  return true;
+}
+
+static bool trmnl_unfilter_png_rows(uint8_t * scanlines, size_t scanlines_size, uint32_t width, uint32_t height, uint32_t row_bytes, char * err, size_t err_len) {
+  const uint32_t filtered_row_bytes = row_bytes + 1;
+  if (scanlines_size != ((size_t)filtered_row_bytes * height)) {
+    trmnl_set_error(err, err_len, "unexpected decompressed size");
+    return false;
+  }
+
+  for (uint32_t y = 0; y < height; y++) {
+    uint8_t * filtered = scanlines + ((size_t)y * filtered_row_bytes);
+    uint8_t filter = filtered[0];
+    uint8_t * raw = filtered + 1;
+    uint8_t * row = scanlines + ((size_t)y * row_bytes);
+    const uint8_t * prev = (y == 0) ? nullptr : (scanlines + ((size_t)(y - 1) * row_bytes));
+
+    for (uint32_t x = 0; x < row_bytes; x++) {
+      uint8_t left = (x == 0) ? 0 : row[x - 1];
+      uint8_t up = prev ? prev[x] : 0;
+      uint8_t up_left = (prev && x > 0) ? prev[x - 1] : 0;
+      uint8_t val = raw[x];
+
+      switch (filter) {
+        case 0: // None
+          break;
+        case 1: // Sub
+          val = (uint8_t)(val + left);
+          break;
+        case 2: // Up
+          val = (uint8_t)(val + up);
+          break;
+        case 3: // Average
+          val = (uint8_t)(val + ((uint16_t)left + up) / 2);
+          break;
+        case 4: { // Paeth
+          int32_t p = (int32_t)left + up - up_left;
+          int32_t pa = abs(p - left);
+          int32_t pb = abs(p - up);
+          int32_t pc = abs(p - up_left);
+          uint8_t predictor = (pa <= pb && pa <= pc) ? left : ((pb <= pc) ? up : up_left);
+          val = (uint8_t)(val + predictor);
+          break;
+        }
+        default:
+          trmnl_set_error(err, err_len, "unsupported PNG row filter");
+          return false;
+      }
+      row[x] = val;
+    }
+  }
+
+  return true;
+}
+
+static bool trmnl_load_png_1bit(const char * path, void * out_ptr, char * err, size_t err_len) {
+  trmnl_png_i1_t * out = (trmnl_png_i1_t*)out_ptr;
+  if (!path || !out) {
+    trmnl_set_error(err, err_len, "missing path");
+    return false;
+  }
+
+  memset(out, 0, sizeof(*out));
+
+  File f = dfsp->open(path, "r");
+  if (!f) {
+    trmnl_set_error(err, err_len, "cannot open PNG");
+    return false;
+  }
+
+  size_t png_size = f.size();
+  if (png_size < 33 || png_size > 262144) {
+    f.close();
+    trmnl_set_error(err, err_len, "PNG file size is out of range");
+    return false;
+  }
+
+  uint8_t magic[2];
+  if (f.read(magic, sizeof(magic)) != sizeof(magic)) {
+    f.close();
+    trmnl_set_error(err, err_len, "short image read");
+    return false;
+  }
+  if (magic[0] == 'P' && magic[1] == '4') {
+    bool ok = trmnl_load_pbm_p4_file(f, png_size, out, err, err_len);
+    f.close();
+    return ok;
+  }
+
+  uint8_t * png = (uint8_t*)malloc(png_size);
+  if (!png) {
+    f.close();
+    trmnl_set_error(err, err_len, "cannot allocate PNG buffer");
+    return false;
+  }
+
+  if (!f.seek(0)) {
+    free(png);
+    f.close();
+    trmnl_set_error(err, err_len, "cannot rewind image");
+    return false;
+  }
+  size_t got = f.read(png, png_size);
+  f.close();
+  if (got != png_size) {
+    free(png);
+    trmnl_set_error(err, err_len, "short PNG read");
+    return false;
+  }
+
+  if (png_size >= 2 && png[0] == 'P' && png[1] == '4') {
+    bool ok = trmnl_load_pbm_p4(png, png_size, out, err, err_len);
+    free(png);
+    return ok;
+  }
+
+#ifndef USE_LVGL_PNG_DECODER
+  free(png);
+  trmnl_set_error(err, err_len, "LVGL PNG decoder is not enabled");
+  return false;
+#else
+  static const uint8_t png_signature[8] = { 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a };
+  if (memcmp(png, png_signature, sizeof(png_signature)) != 0) {
+    free(png);
+    trmnl_set_error(err, err_len, "not a PNG");
+    return false;
+  }
+
+  uint8_t * idat = nullptr;
+  size_t idat_size = 0;
+  bool seen_ihdr = false;
+  bool seen_iend = false;
+  uint8_t bit_depth = 0;
+  uint8_t color_type = 0;
+  uint8_t interlace = 0;
+
+  size_t pos = sizeof(png_signature);
+  while ((pos + 12) <= png_size) {
+    uint32_t len = trmnl_read_be32(png + pos);
+    if ((size_t)len > png_size || (pos + 12 + len) > png_size) {
+      free(idat);
+      free(png);
+      trmnl_set_error(err, err_len, "bad PNG chunk length");
+      return false;
+    }
+
+    const uint8_t * type = png + pos + 4;
+    const uint8_t * data = png + pos + 8;
+
+    if (memcmp(type, "IHDR", 4) == 0) {
+      if (len != 13) {
+        free(idat);
+        free(png);
+        trmnl_set_error(err, err_len, "bad IHDR length");
+        return false;
+      }
+      out->width = trmnl_read_be32(data);
+      out->height = trmnl_read_be32(data + 4);
+      bit_depth = data[8];
+      color_type = data[9];
+      interlace = data[12];
+      seen_ihdr = true;
+    } else if (memcmp(type, "IDAT", 4) == 0) {
+      if (!trmnl_append_idat(&idat, &idat_size, data, len)) {
+        free(idat);
+        free(png);
+        trmnl_set_error(err, err_len, "cannot allocate IDAT buffer");
+        return false;
+      }
+    } else if (memcmp(type, "IEND", 4) == 0) {
+      seen_iend = true;
+      break;
+    }
+
+    pos += 12 + len;
+  }
+  free(png);
+
+  if (!seen_ihdr || !seen_iend || idat_size == 0) {
+    free(idat);
+    trmnl_set_error(err, err_len, "incomplete PNG");
+    return false;
+  }
+  if (out->width == 0 || out->height == 0 || out->width > 2048 || out->height > 2048) {
+    free(idat);
+    trmnl_set_error(err, err_len, "unsupported PNG dimensions");
+    return false;
+  }
+  if (bit_depth != 1 || color_type != 0 || interlace != 0) {
+    free(idat);
+    trmnl_set_error(err, err_len, "expected non-interlaced 1-bit grayscale PNG");
+    return false;
+  }
+
+  out->stride = (out->width + 7) / 8;
+  size_t expected_scanlines = ((size_t)out->stride + 1) * out->height;
+
+  LodePNGDecompressSettings settings;
+  lodepng_decompress_settings_init(&settings);
+  unsigned char * scanlines = nullptr;
+  size_t scanlines_size = 0;
+  unsigned lode_error = lodepng_zlib_decompress(&scanlines, &scanlines_size, idat, idat_size, &settings);
+  free(idat);
+
+  if (lode_error) {
+    if (scanlines) { lodepng_free(scanlines); }
+    snprintf(err, err_len, "PNG inflate failed: %u %s", lode_error, lodepng_error_text(lode_error));
+    return false;
+  }
+
+  if (!trmnl_unfilter_png_rows(scanlines, scanlines_size, out->width, out->height, out->stride, err, err_len)) {
+    lodepng_free(scanlines);
+    return false;
+  }
+
+  out->rows = scanlines;
+  out->rows_from_lodepng = true;
+  return true;
+#endif // USE_LVGL_PNG_DECODER
+}
+
+static bool trmnl_source_bit(const void * src_ptr, uint32_t x, uint32_t y) {
+  const trmnl_png_i1_t * src = (const trmnl_png_i1_t*)src_ptr;
+  if (x >= src->width) { x = src->width - 1; }
+  if (y >= src->height) { y = src->height - 1; }
+  const uint8_t * row = src->rows + ((size_t)y * src->stride);
+  return (row[x >> 3] & (0x80 >> (x & 7))) != 0;
+}
+
+static void trmnl_map_pixel(uint32_t dx, uint32_t dy, uint32_t dst_w, uint32_t dst_h, uint32_t src_w, uint32_t src_h, int32_t rotation, uint32_t * sx, uint32_t * sy) {
+  rotation %= 360;
+  if (rotation < 0) { rotation += 360; }
+
+  if (rotation == 90 || rotation == 270) {
+    uint32_t rx = ((uint64_t)dx * src_h) / dst_w;
+    uint32_t ry = ((uint64_t)dy * src_w) / dst_h;
+    if (rotation == 90) {
+      *sx = ry;
+      *sy = src_h - 1 - rx;
+    } else {
+      *sx = src_w - 1 - ry;
+      *sy = rx;
+    }
+  } else {
+    uint32_t rx = ((uint64_t)dx * src_w) / dst_w;
+    uint32_t ry = ((uint64_t)dy * src_h) / dst_h;
+    if (rotation == 180) {
+      *sx = src_w - 1 - rx;
+      *sy = src_h - 1 - ry;
+    } else {
+      *sx = rx;
+      *sy = ry;
+    }
+  }
+}
+
+static bool trmnl_show_png_1bit(const char * path, int32_t rotation, char * result, size_t result_len) {
+  if (!lvgl_started()) {
+    start_lvgl(nullptr);
+  }
+  if (!lvgl_started()) {
+    trmnl_set_error(result, result_len, "LVGL is not started");
+    return false;
+  }
+
+  trmnl_png_i1_t src;
+  char err[96];
+  err[0] = 0;
+  if (!trmnl_load_png_1bit(path, &src, err, sizeof(err))) {
+    trmnl_set_error(result, result_len, err);
+    return false;
+  }
+
+  uint32_t dst_w = lv_display_get_horizontal_resolution(nullptr);
+  uint32_t dst_h = lv_display_get_vertical_resolution(nullptr);
+  if (dst_w == 0 || dst_h == 0) {
+    trmnl_free_png(&src);
+    trmnl_set_error(result, result_len, "display has no resolution");
+    return false;
+  }
+
+  trmnl_release_lvgl();
+
+  lv_trmnl_draw_buf = lv_draw_buf_create(dst_w, dst_h, LV_COLOR_FORMAT_I1, LV_STRIDE_AUTO);
+  if (!lv_trmnl_draw_buf) {
+    trmnl_free_png(&src);
+    trmnl_set_error(result, result_len, "cannot allocate LVGL draw buffer");
+    return false;
+  }
+
+  lv_draw_buf_set_palette(lv_trmnl_draw_buf, 0, lv_color_to_32(lv_color_white(), LV_OPA_COVER));
+  lv_draw_buf_set_palette(lv_trmnl_draw_buf, 1, lv_color_to_32(lv_color_black(), LV_OPA_COVER));
+
+  uint8_t * dst_rows = (uint8_t*)lv_draw_buf_goto_xy(lv_trmnl_draw_buf, 0, 0);
+  uint32_t dst_stride = lv_trmnl_draw_buf->header.stride;
+  memset(dst_rows, 0, (size_t)dst_stride * dst_h);
+
+  for (uint32_t dy = 0; dy < dst_h; dy++) {
+    uint8_t * dst_row = dst_rows + ((size_t)dy * dst_stride);
+    for (uint32_t dx = 0; dx < dst_w; dx++) {
+      uint32_t sx = 0;
+      uint32_t sy = 0;
+      trmnl_map_pixel(dx, dy, dst_w, dst_h, src.width, src.height, rotation, &sx, &sy);
+      bool source_white = trmnl_source_bit(&src, sx, sy);
+      if (!source_white) {
+        dst_row[dx >> 3] |= (0x80 >> (dx & 7));
+      }
+    }
+  }
+
+  trmnl_free_png(&src);
+
+  lv_trmnl_screen = lv_obj_create(nullptr);
+  lv_obj_set_size(lv_trmnl_screen, dst_w, dst_h);
+  lv_obj_set_style_bg_color(lv_trmnl_screen, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(lv_trmnl_screen, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+  lv_obj_t * canvas = lv_canvas_create(lv_trmnl_screen);
+  lv_canvas_set_draw_buf(canvas, lv_trmnl_draw_buf);
+  lv_obj_set_pos(canvas, 0, 0);
+  lv_obj_clear_flag(canvas, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_screen_load(lv_trmnl_screen);
+  lv_obj_invalidate(lv_trmnl_screen);
+  lv_refr_now(lv_display_get_default());
+
+  snprintf(result, result_len, "%lux%lu -> %lux%lu rotation=%ld",
+           (unsigned long)src.width, (unsigned long)src.height,
+           (unsigned long)dst_w, (unsigned long)dst_h,
+           (long)rotation);
+  return true;
+}
+
 /*********************************************************************************************\
  * Native functions mapped to Berry functions
  *
@@ -163,6 +707,29 @@ extern "C" {
 #else // USE_LVGL_FREETYPE
     be_raise(vm, "feature_error", "FreeType fonts are not available, use '#define USE_LVGL_FREETYPE 1'");
 #endif // USE_LVGL_FREETYPE
+  }
+
+  /*********************************************************************************************\
+   * Display a TRMNL 1-bit grayscale PNG as a resized LVGL I1 canvas.
+  \*********************************************************************************************/
+  int lv0_trmnl_show_png(bvm *vm);
+  int lv0_trmnl_show_png(bvm *vm) {
+    int32_t argc = be_top(vm);
+    if (argc >= 1 && be_isstring(vm, 1)) {
+      const char * path = be_tostring(vm, 1);
+      int32_t rotation = 270;
+      if (argc >= 2 && be_isint(vm, 2)) {
+        rotation = be_toint(vm, 2);
+      }
+
+      char result[128];
+      if (trmnl_show_png_1bit(path, rotation, result, sizeof(result))) {
+        be_pushstring(vm, result);
+        be_return(vm);
+      }
+      be_raise(vm, "value_error", result);
+    }
+    be_raise(vm, kTypeError, nullptr);
   }
 
   /*********************************************************************************************\

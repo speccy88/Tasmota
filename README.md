@@ -19,7 +19,7 @@ Current port status:
 | Area | Status | Notes |
 | --- | --- | --- |
 | Build target | Working | Active PlatformIO environment is `tasmota32s3-lvgl` using the `ESP32S3_RLCD_4_2` define. |
-| Flashing and boot | Working | Factory and firmware image flash commands are documented below; serial testing has used `/dev/cu.usbmodem1101`. |
+| Flashing and boot | Working | Factory and firmware image flash commands are documented below; current serial testing has used `/dev/cu.usbmodem101`. |
 | Display | Working/in progress | ST7305 reflective LCD support is carried in this side branch, including local uDisplay renderer fixes for this board. |
 | Wi-Fi and Tasmota UI | Working | Uses the normal Tasmota ESP32-S3 boot and configuration flow. |
 | I2C peripherals | Working | Bus1 uses GPIO14 SCL and GPIO13 SDA; scan has found `0x18`, `0x40`, `0x51`, and `0x70`. |
@@ -27,17 +27,50 @@ Current port status:
 | Speaker path | In progress | GPIO46 amplifier control and TDM I2S playback setup are implemented; `I2SPlay` starts and WAV decode selection is available. Audible-output validation is still pending. |
 | Microphone/recording | In progress | WAV recording support and timed `I2SRec <seconds>,<path>` parsing are implemented and build successfully. Hardware validation of captured audio level/quality is still pending. |
 | Filesystem audio files | Pending validation | Next hardware test should create `/mic.wav` with `I2SRec 10,/mic.wav`, then play it with `I2SPlay /mic.wav`. |
+| TRMNL dashboard display | Working via local bridge | `lv.trmnl_show_png(path, rotation)` renders 1-bit TRMNL frames through LVGL. `tools/rlcd_trmnl/autoexec.be` starts 5 seconds after boot, fetches indefinitely, uses TRMNL `refresh_rate` timing, and keeps only the current frame on the filesystem. Because direct HTTPS to TRMNL is not reliable with the lightweight board TLS stack, `tools/rlcd_trmnl/trmnl_bridge.py` performs the HTTPS/API hop off-device and serves a half-resolution 1-bit PBM frame over local HTTP. |
+
+TRMNL bridge setup keeps API credentials out of the Berry script and out of the repository. Store credentials locally on the bridge host, or export them as environment variables:
+
+```bash
+mkdir -p ~/.config/trmnl_tasmota
+chmod 700 ~/.config/trmnl_tasmota
+$EDITOR ~/.config/trmnl_tasmota/config.json
+```
+
+Use this JSON shape, replacing the placeholders locally:
+
+```json
+{
+  "id": "YOUR_TRMNL_ID",
+  "token": "YOUR_TRMNL_TOKEN"
+}
+```
+
+Run the bridge on a machine reachable by the board:
+
+```bash
+python3 tools/rlcd_trmnl/trmnl_bridge.py --host 0.0.0.0 --port 8765 --public-host <bridge-lan-ip>:8765
+```
+
+Upload `tools/rlcd_trmnl/autoexec.be` to the Tasmota filesystem as `/autoexec.be`, then create `/trmnl_config.json` on the device without credentials when using the bridge:
+
+```json
+{
+  "api_url": "http://<bridge-lan-ip>:8765/api/display",
+  "send_auth": false
+}
+```
 
 Flash Tasmota build (`tasmota32s3-lvgl`):
 
 ```bash
-esptool --chip esp32s3 --port /dev/cu.usbmodem1101 --baud 921600 write-flash -z 0xE0000 Tasmota/.pio/build/tasmota32s3-lvgl/firmware.bin
+esptool --chip esp32s3 --port /dev/cu.usbmodem101 --baud 921600 write-flash -z 0xE0000 Tasmota/.pio/build/tasmota32s3-lvgl/firmware.bin
 ```
 
 Full factory flash image:
 
 ```bash
-esptool --chip esp32s3 --port /dev/cu.usbmodem1101 --baud 921600 write-flash -z 0x0 /Tasmota/build_output/firmware/tasmota32s3-lvgl.factory.bin
+esptool --chip esp32s3 --port /dev/cu.usbmodem101 --baud 921600 write-flash -z 0x0 /Tasmota/build_output/firmware/tasmota32s3-lvgl.factory.bin
 ```
 
 Alternative firmware for [ESP8266](https://en.wikipedia.org/wiki/ESP8266) and [ESP32](https://en.wikipedia.org/wiki/ESP32) based devices with **easy configuration using webUI, OTA updates, automation using timers or rules, expandability and entirely local control over MQTT, HTTP, Serial or KNX**.
