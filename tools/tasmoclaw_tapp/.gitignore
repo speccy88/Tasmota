@@ -1,0 +1,4 @@
+dist/
+*.tapp
+*.zip
+*.gz
