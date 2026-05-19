@@ -25,11 +25,16 @@
 #include "AudioFileSourcePROGMEM.h"
 #include "AudioFileSourceID3.h"
 #include "AudioGeneratorMP3.h"
+#include "AudioGeneratorWAV.h"
 
 #include "AudioFileSourceFS.h"
 #include "AudioGeneratorTalkie.h"
 #include "AudioFileSourceICYStream.h"
 #include "AudioFileSourceBuffer.h"
+#if defined(ESP32S3_RLCD_4_2)
+#include "driver/gpio.h"
+#include "driver/i2s_tdm.h"
+#endif
 #ifdef USE_I2S_AAC
 #include "AudioGeneratorAAC.h"
 #endif // USE_I2S_AAC
@@ -64,6 +69,8 @@ void S3boxAudioPower(uint8_t pwr);
 void S3boxInit(void);
 bool S3boxCodecReady(void);
 bool EnsureES8311Initialized(void);
+void S3boxDumpCodec(const char *tag);
+void S3boxForcePlaybackCodec(uint32_t hz);
 void S3boxCodecPeriodic(void);
 #endif
 
@@ -79,6 +86,329 @@ void Rtttl(char *buffer);
 void CmndI2SRtttl(void);
 void I2sWebRadioStopPlaying(void);
 void CmndI2SMP3Stream(void);
+void CmndI2SBeep(void);
+void CmndI2SCodec(void);
+void I2SAudioPower(bool power);
+
+#if defined(ESP32S3_RLCD_4_2)
+static void RlcdLogAudioPinActivity(const char *tag, uint32_t sample_us) {
+  const gpio_num_t pins[] = { GPIO_NUM_16, GPIO_NUM_9, GPIO_NUM_45, GPIO_NUM_8, GPIO_NUM_46 };
+  const char *names[] = { "MCLK16", "BCLK9", "WS45", "DOUT8", "PA46" };
+  constexpr uint32_t pin_count = sizeof(pins) / sizeof(pins[0]);
+  uint32_t changes[pin_count] = {0};
+  int last[pin_count];
+  int first[pin_count];
+  for (uint32_t i = 0; i < pin_count; i++) {
+    first[i] = last[i] = gpio_get_level(pins[i]);
+  }
+
+  uint32_t loops = 0;
+  uint32_t start = micros();
+  while ((uint32_t)(micros() - start) < sample_us) {
+    loops++;
+    for (uint32_t i = 0; i < pin_count; i++) {
+      int level = gpio_get_level(pins[i]);
+      if (level != last[i]) {
+        changes[i]++;
+        last[i] = level;
+      }
+    }
+  }
+  AddLog(LOG_LEVEL_INFO,
+         "I2S: pin activity %s %uus loops=%u %s:%u %d>%d %s:%u %d>%d %s:%u %d>%d %s:%u %d>%d %s:%u %d>%d",
+         tag ? tag : "", sample_us, loops,
+         names[0], changes[0], first[0], last[0],
+         names[1], changes[1], first[1], last[1],
+         names[2], changes[2], first[2], last[2],
+         names[3], changes[3], first[3], last[3],
+         names[4], changes[4], first[4], last[4]);
+}
+
+static i2s_chan_handle_t g_rlcd_factory_tx = nullptr;
+static i2s_chan_handle_t g_rlcd_factory_rx = nullptr;
+
+static void RlcdFactoryI2SDelete(void) {
+  if (g_rlcd_factory_rx) {
+    esp_err_t err = i2s_channel_disable(g_rlcd_factory_rx);
+    AddLog(LOG_LEVEL_DEBUG, "I2S: factory RX disable err=0x%04X", err);
+    err = i2s_del_channel(g_rlcd_factory_rx);
+    AddLog(LOG_LEVEL_INFO, "I2S: factory RX delete err=0x%04X", err);
+    g_rlcd_factory_rx = nullptr;
+  }
+  if (g_rlcd_factory_tx) {
+    esp_err_t err = i2s_channel_disable(g_rlcd_factory_tx);
+    AddLog(LOG_LEVEL_DEBUG, "I2S: factory TX disable err=0x%04X", err);
+    err = i2s_del_channel(g_rlcd_factory_tx);
+    AddLog(LOG_LEVEL_INFO, "I2S: factory TX delete err=0x%04X", err);
+    g_rlcd_factory_tx = nullptr;
+  }
+}
+
+static void RlcdReleaseTasmotaI2SHandles(void) {
+  if (audio_i2s.in && (audio_i2s.in == audio_i2s.out)) {
+    AddLog(LOG_LEVEL_INFO, "I2S: releasing shared Tasmota I2S handles");
+    audio_i2s.in->releaseHandles();
+    return;
+  }
+  if (audio_i2s.in) {
+    AddLog(LOG_LEVEL_INFO, "I2S: releasing Tasmota RX handle");
+    audio_i2s.in->releaseHandles();
+  }
+  if (audio_i2s.out) {
+    AddLog(LOG_LEVEL_INFO, "I2S: releasing Tasmota TX handle");
+    audio_i2s.out->releaseHandles();
+  }
+}
+
+static bool RlcdFactoryI2SInit(uint32_t initial_rate) {
+  RlcdFactoryI2SDelete();
+  RlcdReleaseTasmotaI2SHandles();
+
+  i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  chan_cfg.auto_clear = true;
+  chan_cfg.id = I2S_NUM_AUTO;   // Matches Waveshare codec_board _i2s_init()
+  esp_err_t err = i2s_new_channel(&chan_cfg, &g_rlcd_factory_tx, &g_rlcd_factory_rx);
+  AddLog(LOG_LEVEL_INFO, "I2S: factory i2s_new_channel tx=%p rx=%p err=0x%04X",
+         g_rlcd_factory_tx, g_rlcd_factory_rx, err);
+  if (err != ESP_OK || !g_rlcd_factory_tx || !g_rlcd_factory_rx) {
+    RlcdFactoryI2SDelete();
+    return false;
+  }
+
+  i2s_tdm_slot_mask_t init_mask = (i2s_tdm_slot_mask_t)(I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3);
+  i2s_tdm_config_t tdm_cfg = {
+    .clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(initial_rate),
+    .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, init_mask),
+    .gpio_cfg = {
+      .mclk = GPIO_NUM_16,
+      .bclk = GPIO_NUM_9,
+      .ws = GPIO_NUM_45,
+      .dout = GPIO_NUM_8,
+      .din = GPIO_NUM_10,
+      .invert_flags = {
+        .mclk_inv = false,
+        .bclk_inv = false,
+        .ws_inv = false,
+      },
+    },
+  };
+  tdm_cfg.slot_cfg.total_slot = 4;
+
+  err = i2s_channel_init_tdm_mode(g_rlcd_factory_tx, &tdm_cfg);
+  AddLog(LOG_LEVEL_INFO, "I2S: factory TX init TDM 32bit/4slot/%u err=0x%04X", initial_rate, err);
+  if (err != ESP_OK) {
+    RlcdFactoryI2SDelete();
+    return false;
+  }
+  err = i2s_channel_init_tdm_mode(g_rlcd_factory_rx, &tdm_cfg);
+  AddLog(LOG_LEVEL_INFO, "I2S: factory RX init TDM 32bit/4slot/%u err=0x%04X", initial_rate, err);
+  if (err != ESP_OK) {
+    RlcdFactoryI2SDelete();
+    return false;
+  }
+
+  err = i2s_channel_enable(g_rlcd_factory_tx);
+  AddLog(LOG_LEVEL_INFO, "I2S: factory TX enable err=0x%04X", err);
+  if (err != ESP_OK) {
+    RlcdFactoryI2SDelete();
+    return false;
+  }
+  err = i2s_channel_enable(g_rlcd_factory_rx);
+  AddLog(LOG_LEVEL_INFO, "I2S: factory RX enable err=0x%04X", err);
+  if (err != ESP_OK) {
+    RlcdFactoryI2SDelete();
+    return false;
+  }
+
+  RlcdLogAudioPinActivity("factory-init", 2000);
+  return true;
+}
+
+static bool RlcdFactoryI2SSetPlayback(uint32_t sample_rate, uint32_t channels, uint32_t bits_per_sample) {
+  if (!g_rlcd_factory_tx) { return false; }
+
+  esp_err_t err = i2s_channel_disable(g_rlcd_factory_tx);
+  AddLog(LOG_LEVEL_INFO, "I2S: factory TX disable before fs err=0x%04X", err);
+  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) { return false; }
+
+  i2s_tdm_slot_mask_t slot_mask = (i2s_tdm_slot_mask_t)(I2S_TDM_SLOT0 | I2S_TDM_SLOT1);
+  i2s_tdm_slot_config_t slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(
+    (i2s_data_bit_width_t)bits_per_sample,
+    I2S_SLOT_MODE_STEREO,
+    slot_mask);
+  slot_cfg.total_slot = channels;
+  slot_cfg.slot_bit_width = (bits_per_sample == 32) ? I2S_SLOT_BIT_WIDTH_32BIT : I2S_SLOT_BIT_WIDTH_16BIT;
+
+  err = i2s_channel_reconfig_tdm_slot(g_rlcd_factory_tx, &slot_cfg);
+  AddLog(LOG_LEVEL_INFO, "I2S: factory TX slot bits=%u channels=%u mask=0x%X err=0x%04X",
+         bits_per_sample, channels, slot_mask, err);
+  if (err != ESP_OK) { return false; }
+
+  i2s_tdm_clk_config_t clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(sample_rate);
+  err = i2s_channel_reconfig_tdm_clock(g_rlcd_factory_tx, &clk_cfg);
+  AddLog(LOG_LEVEL_INFO, "I2S: factory TX clock rate=%u err=0x%04X", sample_rate, err);
+  if (err != ESP_OK) { return false; }
+
+  err = i2s_channel_enable(g_rlcd_factory_tx);
+  AddLog(LOG_LEVEL_INFO, "I2S: factory TX enable after fs err=0x%04X", err);
+  if (err != ESP_OK) { return false; }
+
+  RlcdLogAudioPinActivity("factory-playback", 2000);
+  return true;
+}
+
+static bool RlcdFactoryBeep(uint32_t duration_ms, uint32_t tone_hz) {
+  constexpr uint32_t sample_rate = 24000;
+  if (!RlcdFactoryI2SInit(16000)) {
+    AddLog(LOG_LEVEL_ERROR, "I2S: factory beep I2S init failed");
+    return false;
+  }
+
+  S3boxForcePlaybackCodec(sample_rate);
+  I2SAudioPower(true);
+  if (!RlcdFactoryI2SSetPlayback(sample_rate, 2, 16)) {
+    I2SAudioPower(false);
+    RlcdFactoryI2SDelete();
+    return false;
+  }
+
+  uint32_t total_frames = (sample_rate * duration_ms) / 1000;
+  uint32_t frame_index = 0;
+  uint32_t samples_per_half_period = sample_rate / (tone_hz * 2);
+  if (!samples_per_half_period) { samples_per_half_period = 1; }
+
+  uint32_t writes = 0;
+  uint32_t total_bytes_written = 0;
+  AddLog(LOG_LEVEL_INFO, "I2S: factory direct beep %u ms at %u Hz sample_rate=%u", duration_ms, tone_hz, sample_rate);
+  while (frame_index < total_frames) {
+    int16_t pcm[128 * 2];
+    uint32_t frames = total_frames - frame_index;
+    if (frames > 128) { frames = 128; }
+    for (uint32_t i = 0; i < frames; i++) {
+      int16_t value = (((frame_index + i) / samples_per_half_period) & 1) ? 24000 : -24000;
+      pcm[(i * 2)] = value;
+      pcm[(i * 2) + 1] = value;
+    }
+    size_t bytes_written = 0;
+    esp_err_t err = i2s_channel_write(g_rlcd_factory_tx, pcm, frames * 2 * sizeof(int16_t), &bytes_written, 1000);
+    writes++;
+    total_bytes_written += bytes_written;
+    if (writes <= 2) {
+      AddLog(LOG_LEVEL_INFO, "I2S: factory write #%u requested=%u wrote=%u err=0x%04X",
+             writes, frames * 2 * sizeof(int16_t), bytes_written, err);
+      if (writes == 2) { RlcdLogAudioPinActivity("factory-write", 2000); }
+    }
+    if (err != ESP_OK) {
+      AddLog(LOG_LEVEL_ERROR, "I2S: factory write failed err=0x%04X bytes=%u", err, bytes_written);
+      break;
+    }
+    frame_index += frames;
+  }
+  AddLog(LOG_LEVEL_INFO, "I2S: factory beep wrote total=%u bytes in %u writes", total_bytes_written, writes);
+
+  delay(250);
+  I2SAudioPower(false);
+  RlcdFactoryI2SDelete();
+  return total_bytes_written > 0;
+}
+
+#if defined(RLCD_ENABLE_LEGACY_I2S_TEST)
+static bool RlcdLegacyBeep(uint32_t duration_ms, uint32_t tone_hz) {
+  constexpr i2s_port_t port = I2S_NUM_0;
+  constexpr uint32_t sample_rate = 24000;
+
+  RlcdFactoryI2SDelete();
+  RlcdReleaseTasmotaI2SHandles();
+  i2s_driver_uninstall(port);
+
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 3,
+    .dma_buf_len = 300,
+    .use_apll = false,
+    .tx_desc_auto_clear = true,
+    .fixed_mclk = 0,
+    .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+    .bits_per_chan = I2S_BITS_PER_CHAN_DEFAULT,
+  };
+  esp_err_t err = i2s_driver_install(port, &i2s_config, 0, nullptr);
+  AddLog(LOG_LEVEL_INFO, "I2S: legacy driver install err=0x%04X", err);
+  if (err != ESP_OK) { return false; }
+
+  i2s_pin_config_t pin_config = {
+    .mck_io_num = GPIO_NUM_16,
+    .bck_io_num = GPIO_NUM_9,
+    .ws_io_num = GPIO_NUM_45,
+    .data_out_num = GPIO_NUM_8,
+    .data_in_num = GPIO_NUM_10,
+  };
+  err = i2s_set_pin(port, &pin_config);
+  AddLog(LOG_LEVEL_INFO, "I2S: legacy set_pin mclk=16 bclk=9 ws=45 dout=8 din=10 err=0x%04X", err);
+  if (err != ESP_OK) {
+    i2s_driver_uninstall(port);
+    return false;
+  }
+
+  S3boxForcePlaybackCodec(sample_rate);
+  I2SAudioPower(true);
+  err = i2s_set_clk(port, sample_rate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
+  AddLog(LOG_LEVEL_INFO, "I2S: legacy set_clk %u/16/stereo err=0x%04X", sample_rate, err);
+  if (err != ESP_OK) {
+    I2SAudioPower(false);
+    i2s_driver_uninstall(port);
+    return false;
+  }
+  i2s_zero_dma_buffer(port);
+  i2s_start(port);
+  RlcdLogAudioPinActivity("legacy-start", 2000);
+
+  uint32_t total_frames = (sample_rate * duration_ms) / 1000;
+  uint32_t frame_index = 0;
+  uint32_t samples_per_half_period = sample_rate / (tone_hz * 2);
+  if (!samples_per_half_period) { samples_per_half_period = 1; }
+
+  uint32_t writes = 0;
+  uint32_t total_bytes_written = 0;
+  AddLog(LOG_LEVEL_INFO, "I2S: legacy beep %u ms at %u Hz sample_rate=%u", duration_ms, tone_hz, sample_rate);
+  while (frame_index < total_frames) {
+    int16_t pcm[128 * 2];
+    uint32_t frames = total_frames - frame_index;
+    if (frames > 128) { frames = 128; }
+    for (uint32_t i = 0; i < frames; i++) {
+      int16_t value = (((frame_index + i) / samples_per_half_period) & 1) ? 24000 : -24000;
+      pcm[(i * 2)] = value;
+      pcm[(i * 2) + 1] = value;
+    }
+    size_t bytes_written = 0;
+    err = i2s_write(port, pcm, frames * 2 * sizeof(int16_t), &bytes_written, pdMS_TO_TICKS(1000));
+    writes++;
+    total_bytes_written += bytes_written;
+    if (writes <= 2) {
+      AddLog(LOG_LEVEL_INFO, "I2S: legacy write #%u requested=%u wrote=%u err=0x%04X",
+             writes, frames * 2 * sizeof(int16_t), bytes_written, err);
+      if (writes == 2) { RlcdLogAudioPinActivity("legacy-write", 2000); }
+    }
+    if (err != ESP_OK) {
+      AddLog(LOG_LEVEL_ERROR, "I2S: legacy write failed err=0x%04X bytes=%u", err, bytes_written);
+      break;
+    }
+    frame_index += frames;
+  }
+  AddLog(LOG_LEVEL_INFO, "I2S: legacy beep wrote total=%u bytes in %u writes", total_bytes_written, writes);
+
+  delay(250);
+  I2SAudioPower(false);
+  i2s_stop(port);
+  i2s_driver_uninstall(port);
+  return total_bytes_written > 0;
+}
+#endif
+#endif
 
 /*********************************************************************************************\
  * More structures
@@ -103,6 +433,7 @@ struct AUDIO_I2S_MP3_t {
 
   char mic_path[32];
   int8_t mic_error;
+  uint32_t mic_duration_limit;
   volatile bool mic_stop = false;
   bool use_stream = false;
   bool task_running = false;
@@ -167,7 +498,7 @@ const char kI2SAudio_Commands[] PROGMEM = "I2S|"
   "|Play|Loop|Pause"
 #endif
 #ifdef USE_I2S_DEBUG
-  "|Mic"      // debug only
+  "|Mic|Beep|Codec"      // debug only
 #endif // USE_I2S_DEBUG
 #ifdef USE_I2S_WEBRADIO
   "|WR"
@@ -198,6 +529,8 @@ void (* const I2SAudio_Command[])(void) PROGMEM = {
 #endif
 #ifdef USE_I2S_DEBUG
   &CmndI2SMic,
+  &CmndI2SBeep,
+  &CmndI2SCodec,
 #endif // USE_I2S_DEBUG
 #ifdef USE_I2S_WEBRADIO
   &CmndI2SWebRadio,
@@ -591,6 +924,22 @@ void I2sInit(void) {
     }
 
     TasmotaI2S * i2s = new TasmotaI2S;
+#if defined(ESP32S3_RLCD_4_2)
+    if (tx) {
+      audio_i2s.Settings->tx.mode = I2S_MODE_TDM;
+      audio_i2s.Settings->tx.slot_config = I2S_SLOT_PHILIPS;
+      audio_i2s.Settings->tx.slot_mask = BIT(0) | BIT(1);
+      audio_i2s.Settings->tx.channels = 2;
+      audio_i2s.Settings->tx.apll = 0;
+    }
+    if (rx) {
+      audio_i2s.Settings->rx.mode = I2S_MODE_TDM;
+      audio_i2s.Settings->rx.slot_mask = BIT(0);
+      audio_i2s.Settings->rx.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+      audio_i2s.Settings->rx.channels = 1;
+      audio_i2s.Settings->rx.apll = 0;
+    }
+#endif
     i2s->setPinout(bclk, ws, dout, mclk, din,
                     audio_i2s.Settings->sys.mclk_inv[0], audio_i2s.Settings->sys.bclk_inv[0],
                     audio_i2s.Settings->sys.ws_inv[0], audio_i2s.Settings->tx.apll);
@@ -653,6 +1002,15 @@ void I2sInit(void) {
   }
 #endif // USE_I2S_MP3
 #if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+#if defined(ESP32S3_RLCD_4_2)
+  // Waveshare's factory firmware enables both I2S channels before codec init.
+  // Some ES8311 setup writes appear to depend on live MCLK/BCLK/WS clocks.
+  if (audio_i2s.out && audio_i2s.in && !exclusive) {
+    bool boot_tx = audio_i2s.out->beginTx();
+    uint32_t boot_rx = audio_i2s.in->startRx();
+    AddLog(LOG_LEVEL_INFO, "I2S: RLCD boot clocks before codec init tx=%d rx=0x%04X", boot_tx, boot_rx);
+  }
+#endif
   S3boxInit();
 #endif
   AddLog(LOG_LEVEL_DEBUG, "I2S: I2sInit done");
@@ -815,6 +1173,9 @@ bool I2SinitDecoder(uint32_t decoder_type){
       audio_i2s_mp3.decoder = dynamic_cast<AudioGenerator *>(new AudioGeneratorOpus());
       break;
 #endif //USE_I2S_OPUS
+    case WAV_DECODER:
+      audio_i2s_mp3.decoder = dynamic_cast<AudioGenerator *>(new AudioGeneratorWAV());
+      break;
   }
   if(audio_i2s_mp3.decoder == nullptr){
     return false;
@@ -924,6 +1285,182 @@ void CmndI2SMic(void) {
   ResponseCmndDone();
 }
 
+void CmndI2SBeep(void) {
+  uint32_t duration_ms = (XdrvMailbox.payload > 0) ? XdrvMailbox.payload : 1000;
+  if (duration_ms > 10000) { duration_ms = 10000; }
+#if defined(ESP32S3_RLCD_4_2)
+  uint32_t tdm_variant = 0;
+#if defined(RLCD_ENABLE_LEGACY_I2S_TEST)
+  if (RlcdLegacyBeep(duration_ms, 1000)) {
+    ResponseCmndDone();
+  } else {
+    ResponseCmndChar("Legacy beep failed");
+  }
+  return;
+#endif
+#endif
+
+  if (I2SPrepareTx() != I2S_OK) {
+    ResponseCmndChar("I2S output not configured");
+    return;
+  }
+
+  const uint32_t sample_rate =
+#if defined(ESP32S3_RLCD_4_2)
+    24000;
+#else
+    16000;
+#endif
+  const uint32_t tone_hz = 1000;
+#if defined(ESP32S3_RLCD_4_2)
+  // esp_codec_dev sets TDM slot format before changing the clock.
+  audio_i2s.out->SetBitsPerSample(16);
+  audio_i2s.out->SetChannels(2);
+  audio_i2s.out->SetTxRate(sample_rate);
+#else
+  audio_i2s.out->SetTxRate(sample_rate);
+  audio_i2s.out->SetBitsPerSample(16);
+  audio_i2s.out->SetChannels(2);
+#endif
+  audio_i2s.out->SetGain(((float)(audio_i2s.Settings->tx.gain + 1) / 100.0));
+#if defined(ESP32S3_RLCD_4_2)
+  if (audio_i2s.in) {
+    uint32_t rx_err = audio_i2s.in->startRx();
+    AddLog(LOG_LEVEL_INFO, "I2S: beep enabled paired RX during TX err=0x%04X", rx_err);
+  }
+#endif
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+  S3boxForcePlaybackCodec(sample_rate);
+#endif
+  I2SAudioPower(true);
+
+#if defined(ESP32S3_RLCD_4_2)
+  i2s_chan_handle_t tx_handle = audio_i2s.out->getTxHandle();
+	  if (!tx_handle) {
+	    I2SAudioPower(false);
+	    ResponseCmndChar("No TX handle");
+	    return;
+	  }
+
+  i2s_data_bit_width_t data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
+  i2s_slot_bit_width_t slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT;
+  uint32_t total_slot = (tdm_variant == 0) ? 2 : 4;
+  i2s_tdm_slot_mask_t slot_mask = (i2s_tdm_slot_mask_t)(I2S_TDM_SLOT0 | I2S_TDM_SLOT1);
+  if (tdm_variant == 2) { slot_mask = (i2s_tdm_slot_mask_t)(I2S_TDM_SLOT1 | I2S_TDM_SLOT2); }
+  if (tdm_variant == 3) { slot_mask = (i2s_tdm_slot_mask_t)(I2S_TDM_SLOT2 | I2S_TDM_SLOT3); }
+  if (tdm_variant == 4) { slot_mask = (i2s_tdm_slot_mask_t)(I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3); }
+  i2s_tdm_slot_config_t slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(data_bit_width, I2S_SLOT_MODE_STEREO, slot_mask);
+  slot_cfg.total_slot = total_slot;
+  slot_cfg.slot_bit_width = slot_bit_width;
+  esp_err_t slot_err = i2s_channel_disable(tx_handle);
+  AddLog(LOG_LEVEL_INFO, "I2S: beep TDM variant=%u disable err=0x%04X", tdm_variant, slot_err);
+  slot_err = i2s_channel_reconfig_tdm_slot(tx_handle, &slot_cfg);
+  AddLog(LOG_LEVEL_INFO, "I2S: beep TDM data=16 slot=16 total=%u mask=0x%X err=0x%04X",
+         total_slot, slot_mask, slot_err);
+  i2s_chan_info_t chan_info = {};
+  i2s_channel_get_info(tx_handle, &chan_info);
+  AddLog(LOG_LEVEL_INFO, "I2S: beep TX channel mode=%d role=%d dir=%d pair=%p",
+         chan_info.mode, chan_info.role, chan_info.dir, chan_info.pair_chan);
+  slot_err = i2s_channel_enable(tx_handle);
+  AddLog(LOG_LEVEL_INFO, "I2S: beep TDM enable err=0x%04X", slot_err);
+  RlcdLogAudioPinActivity("after-enable", 2000);
+
+	  uint32_t total_frames = (sample_rate * duration_ms) / 1000;
+	  uint32_t frame_index = 0;
+  uint32_t total_bytes_written = 0;
+  uint32_t writes = 0;
+	  uint32_t samples_per_half_period = sample_rate / (tone_hz * 2);
+	  if (!samples_per_half_period) { samples_per_half_period = 1; }
+
+		  AddLog(LOG_LEVEL_INFO, "I2S: packed TDM beep %u ms at %u Hz sample_rate=%u variant=%u", duration_ms, tone_hz, sample_rate, tdm_variant);
+	  while (frame_index < total_frames) {
+	    int16_t pcm[256];
+	    uint32_t frames = total_frames - frame_index;
+	    if (frames > 64) { frames = 64; }
+
+	    for (uint32_t i = 0; i < frames; i++) {
+	      int16_t value = (((frame_index + i) / samples_per_half_period) & 1) ? 20000 : -20000;
+        for (uint32_t slot = 0; slot < total_slot; slot++) {
+          pcm[(i * total_slot) + slot] = 0;
+        }
+        if (tdm_variant == 0 || tdm_variant == 1) {
+          pcm[(i * total_slot)] = value;
+          pcm[(i * total_slot) + 1] = value;
+        } else if (tdm_variant == 2) {
+          pcm[(i * total_slot) + 1] = value;
+          pcm[(i * total_slot) + 2] = value;
+        } else if (tdm_variant == 3) {
+          pcm[(i * total_slot) + 2] = value;
+          pcm[(i * total_slot) + 3] = value;
+        } else {
+          for (uint32_t slot = 0; slot < total_slot; slot++) {
+            pcm[(i * total_slot) + slot] = value;
+          }
+        }
+	    }
+
+	    size_t bytes_written = 0;
+	    esp_err_t err = i2s_channel_write(tx_handle, pcm, frames * total_slot * sizeof(int16_t), &bytes_written, 1000);
+    total_bytes_written += bytes_written;
+    writes++;
+    if (writes <= 2) {
+      AddLog(LOG_LEVEL_INFO, "I2S: beep write #%u requested=%u wrote=%u err=0x%04X",
+             writes, frames * total_slot * sizeof(int16_t), bytes_written, err);
+      if (writes == 2) {
+        RlcdLogAudioPinActivity("during-write", 2000);
+      }
+    }
+    if (err != ESP_OK) {
+      AddLog(LOG_LEVEL_INFO, "I2S: factory-style beep write err=0x%04X bytes=%u", err, bytes_written);
+      break;
+    }
+    frame_index += frames;
+  }
+  AddLog(LOG_LEVEL_INFO, "I2S: beep wrote total=%u bytes in %u writes", total_bytes_written, writes);
+
+  delay(250);
+  if (audio_i2s.in && audio_i2s.in->getRxRunning()) {
+    audio_i2s.in->stopRx();
+  }
+  audio_i2s.out->stopTx();
+  I2SAudioPower(false);
+  ResponseCmndDone();
+  return;
+#endif
+
+  uint32_t total_samples = (sample_rate * duration_ms) / 1000;
+  uint32_t sample_index = 0;
+  uint32_t fallback_samples_per_half_period = sample_rate / (tone_hz * 2);
+  if (!fallback_samples_per_half_period) { fallback_samples_per_half_period = 1; }
+
+  AddLog(LOG_LEVEL_INFO, "I2S: beep %u ms at %u Hz sample_rate=%u", duration_ms, tone_hz, sample_rate);
+  while (sample_index < total_samples) {
+    int16_t sample[2];
+    int16_t value = ((sample_index / fallback_samples_per_half_period) & 1) ? 18000 : -18000;
+    sample[0] = value;
+    sample[1] = value;
+    while (!audio_i2s.out->ConsumeSample(sample)) {
+      delay(1);
+    }
+    sample_index++;
+  }
+
+  audio_i2s.out->flush();
+  audio_i2s.out->stopTx();
+  I2SAudioPower(false);
+  ResponseCmndDone();
+}
+
+void CmndI2SCodec(void) {
+#if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
+  EnsureES8311Initialized();
+  S3boxDumpCodec("cmd");
+  ResponseCmndDone();
+#else
+  ResponseCmndChar("No board codec");
+#endif
+}
+
 
 void CmndI2SStop(void) {
   if (I2SPrepareTx() != I2S_OK) {
@@ -960,7 +1497,27 @@ void CmndI2SPause(void) {
 void CmndI2SPlay(void) {
   if (XdrvMailbox.data_len > 0) {
     i2s_clean_pause_data(); // clean up any previous pause data, set start to 0
-    int32_t err = I2SPlayFile(XdrvMailbox.data, XdrvMailbox.index);
+    uint32_t decoder_type = XdrvMailbox.index;
+    if (decoder_type <= MP3_DECODER) {
+      const char *ext = strrchr(XdrvMailbox.data, '.');
+      if (ext && !strcasecmp(ext, ".wav")) {
+        decoder_type = WAV_DECODER;
+      }
+#ifdef USE_I2S_OPUS
+      else if (ext && (!strcasecmp(ext, ".opus") || !strcasecmp(ext, ".webm"))) {
+        decoder_type = OPUS_DECODER;
+      }
+#endif // USE_I2S_OPUS
+#ifdef USE_I2S_AAC
+      else if (ext && (!strcasecmp(ext, ".aac") || !strcasecmp(ext, ".m4a"))) {
+        decoder_type = AAC_DECODER;
+      }
+#endif // USE_I2S_AAC
+      else {
+        decoder_type = MP3_DECODER;
+      }
+    }
+    int32_t err = I2SPlayFile(XdrvMailbox.data, decoder_type);
     // display return message
     switch (err) {
       case I2S_OK:
@@ -1045,11 +1602,43 @@ void CmndI2SMicRec(void) {
     if (!strncmp(XdrvMailbox.data, "-?", 2)) {
       Response_P("{\"I2SREC-duration\":%d}", audio_i2s_mp3.recdur);
     } else {
+      char rec_path[sizeof(audio_i2s_mp3.mic_path)];
+      const char *path = XdrvMailbox.data;
+      audio_i2s_mp3.mic_duration_limit = 0;
+
+      char *comma = strchr(XdrvMailbox.data, ',');
+      if (comma) {
+        char *endptr = nullptr;
+        uint32_t seconds = strtoul(XdrvMailbox.data, &endptr, 10);
+        if (endptr == comma) {
+          audio_i2s_mp3.mic_duration_limit = seconds;
+          path = comma + 1;
+        }
+      }
+      while (*path == ' ') { path++; }
+      strlcpy(rec_path, path, sizeof(rec_path));
+
+      uint32_t encoder_type = XdrvMailbox.index;
+      if (encoder_type <= MP3_ENCODER) {
+        const char *ext = strrchr(rec_path, '.');
+        if (ext && !strcasecmp(ext, ".wav")) {
+          encoder_type = WAV_ENCODER;
+        }
+#ifdef USE_I2S_OPUS
+        else if (ext && (!strcasecmp(ext, ".opus") || !strcasecmp(ext, ".webm"))) {
+          encoder_type = OPUS_ENCODER;
+        }
+#endif // USE_I2S_OPUS
+        else {
+          encoder_type = MP3_ENCODER;
+        }
+      }
+
       audio_i2s_mp3.use_stream = false;
-      int err = I2sRecord(XdrvMailbox.data, XdrvMailbox.index);
+      int err = I2sRecord(rec_path, encoder_type);
       // int err = I2sRecordShine(XdrvMailbox.data);
       if(err == pdPASS){
-        ResponseCmndChar(XdrvMailbox.data);
+        ResponseCmndChar(rec_path);
       } else {
         ResponseCmndChar_P(PSTR("Did not launch recording task"));
       }

@@ -21,6 +21,7 @@
 #ifdef USE_I2S_AUDIO
 
 #include "driver/i2s_std.h"
+#include "driver/i2s_tdm.h"
 #include "driver/i2s_pdm.h"
 #include "driver/gpio.h"
 #include "soc/soc_caps.h"
@@ -57,12 +58,14 @@ enum : uint32_t {
   AAC_DECODER = 0,
   MP3_DECODER = 1,
   OPUS_DECODER = 2,
+  WAV_DECODER = 3,
 };
 
 // I2S encoder type
 enum : uint8_t {
   MP3_ENCODER = 1,
   OPUS_ENCODER = 2,
+  WAV_ENCODER = 3,
 };
 
 #define I2S_SLOTS   2
@@ -86,19 +89,38 @@ typedef struct{
   } sys;
   struct {
     uint32_t sample_rate = 16000;   // B00-03
+#if defined(ESP32S3_RLCD_4_2)
+    uint8_t  gain = 100;            // B04 - Waveshare speaker path is quiet at the generic default
+#else
     uint8_t  gain = 10;             // B04 - was `volume`
-    uint8_t  mode = I2S_MODE_STD;   // B05 - I2S mode standard, PDM, TDM, DAC
+#endif
     uint8_t  slot_mask = BIT(0) | BIT(1);  // B06 - slot mask - both slots aka stereo by default
+#if defined(ESP32S3_RLCD_4_2)
+    uint8_t  mode = I2S_MODE_TDM;   // B05 - Waveshare factory firmware uses TDM on this shared ES8311/ES7210 bus
+    uint8_t  slot_config = I2S_SLOT_PHILIPS;// B07 - ES8311 uses Philips timing on this board
+#else
+    uint8_t  mode = I2S_MODE_STD;   // B05 - I2S mode standard, PDM, TDM, DAC
     uint8_t  slot_config = I2S_SLOT_MSB;// B07 - slot configuration MSB = 0, PCM = 1, PHILIPS = 2
+#endif
     uint8_t  channels = 2;          // B08 - mono/stereo - 1 is added for both
+#if defined(ESP32S3_RLCD_4_2)
+    bool     apll = 0;              // B09 - Waveshare factory code uses the default I2S clock source
+#else
     bool     apll = 1;              // B09 - will be ignored on unsupported SOC's
+#endif
     bool     stream_enable = 0;     // B0A - enable streaming of MP3
     uint8_t  spare[5];              // B0B-0F
   } tx;
   struct {
+#if defined(ESP32S3_RLCD_4_2)
+    uint32_t sample_rate = 16000;  // B00-03 - match Waveshare factory audio example
+#else
     uint32_t sample_rate = 32000;  // B00-03 - 32000 is compatible with MP3 encoding
+#endif
     uint16_t gain = 30 * 16;       // B04-05 - in Q12.4
-#if SOC_I2S_SUPPORTS_PDM_RX
+#if defined(ESP32S3_RLCD_4_2)
+    uint8_t  mode = I2S_MODE_TDM;  // B06 - Waveshare factory firmware uses TDM on this shared ES8311/ES7210 bus
+#elif SOC_I2S_SUPPORTS_PDM_RX
     uint8_t  mode = I2S_MODE_PDM;  // B06 - I2S mode standard, PDM, TDM, DAC
 #else
     uint8_t  mode = I2S_MODE_STD;  // B06 - I2S mode standard, PDM, TDM, DAC
@@ -115,7 +137,11 @@ typedef struct{
     // alpha = dt / (RC + dt) = 0.540757545
     // alpha = (b) 0.100010100110111 = 0x4537
     uint16_t lowpass_alpha = 0b0100010100110111;    // B0C-B0D - lowpass filter = 3000Hz for 16000Hz sample rate
+#if defined(ESP32S3_RLCD_4_2)
+    bool     apll = 0;              // B0E - Waveshare factory code uses the default I2S clock source
+#else
     bool     apll = 1;              // B0E - will be ignored on unsupported SOC's
+#endif
     uint8_t  ws_width = 32;         // B0F - WS signal width - can differ from bits per sample - default 32 bits for INMP441
     bool     ws_pol = false;        // B10 - WS signal polarity
     bool     bit_shift = true;      // B11 - enable bit shift in Philips mode 

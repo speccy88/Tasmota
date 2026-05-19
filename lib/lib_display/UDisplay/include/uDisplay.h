@@ -117,6 +117,7 @@ class uDisplay : public Renderer {
   virtual void dim10(uint8_t dim, uint16_t dim_gamma);           // dimmer with 8 bits resolution, 0..255. Gamma correction must be done by caller with 10 bits resolution
   uint16_t GetColorFromIndex(uint8_t index);
   void setRotation(uint8_t m);
+  void clearDisplay(void);
   void fillScreen(uint16_t color);
   void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
   void pushColors(uint16_t *data, uint32_t len, boolean first);
@@ -241,8 +242,6 @@ private:
     void drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color);
     void drawFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color);
     uint32_t str2c(char **sp, char *vp, uint32_t len);
-    void clearDisplay(void);
-
     void i2c_command(uint8_t val);
 
     uint8_t strlen_ln(char *str);

@@ -81,15 +81,22 @@ static int ES8311_ReadReg(uint8_t reg) {
 
 static uint32_t ES8311_ApplyPostInit(void) {
   uint32_t ret_val = ESP_OK;
-  // Keep explicit post-init writes so power, ADC/DAC paths, and unmute are deterministic.
-  ret_val |= ES8311_WriteReg(ES8311_RESET_REG00, 0x3F) ? ESP_OK : ESP_FAIL;   // release reset, clocks running
-  ret_val |= ES8311_WriteReg(ES8311_SYSTEM_REG0D, 0x01) ? ESP_OK : ESP_FAIL;  // analog power up
-  ret_val |= ES8311_WriteReg(ES8311_SYSTEM_REG0E, 0x02) ? ESP_OK : ESP_FAIL;  // bias/reference power
-  ret_val |= ES8311_WriteReg(ES8311_SYSTEM_REG12, 0x00) ? ESP_OK : ESP_FAIL;  // DAC on
-  ret_val |= ES8311_WriteReg(ES8311_SYSTEM_REG14, 0x1A) ? ESP_OK : ESP_FAIL;  // ADC path + PGA baseline
-  ret_val |= ES8311_WriteReg(ES8311_ADC_REG15, 0x40) ? ESP_OK : ESP_FAIL;     // ADC enable
-  ret_val |= ES8311_WriteReg(ES8311_ADC_REG17, 0xBF) ? ESP_OK : ESP_FAIL;     // ADC digital volume
-  ret_val |= ES8311_WriteReg(ES8311_DAC_REG37, 0x48) ? ESP_OK : ESP_FAIL;     // DAC ramp
+  // Match esp_codec_dev's ES8311 open/set_fs/enable sequence used by the
+  // Waveshare factory firmware. In particular, R00 is the reset/control
+  // register and must stay 0x80 in slave mode; R01 is the 0x3F clock gate.
+  ret_val |= ES8311_WriteReg(ES8311_RESET_REG00, 0x80) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(ES8311_CLK_MANAGER_REG01, 0x3F) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(ES8311_SDPIN_REG09, 0x0C) ? ESP_OK : ESP_FAIL;   // DAC I2S, 16-bit, un-gated
+  ret_val |= ES8311_WriteReg(ES8311_SDPOUT_REG0A, 0x4C) ? ESP_OK : ESP_FAIL;  // ADC serial gated when only DAC is active
+  ret_val |= ES8311_WriteReg(ES8311_ADC_REG17, 0xBF) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(ES8311_SYSTEM_REG0E, 0x02) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(ES8311_SYSTEM_REG12, 0x00) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(ES8311_SYSTEM_REG14, 0x1A) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(ES8311_SYSTEM_REG0D, 0x01) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(ES8311_ADC_REG15, 0x40) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(ES8311_DAC_REG37, 0x08) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(ES8311_GP_REG45, 0x00) ? ESP_OK : ESP_FAIL;
+  ret_val |= ES8311_WriteReg(0x44, 0x58) ? ESP_OK : ESP_FAIL;                 // internal reference signal for ADCL + DACR
   int dac31 = ES8311_ReadReg(ES8311_DAC_REG31);
   if (dac31 >= 0) {
     ret_val |= ES8311_WriteReg(ES8311_DAC_REG31, dac31 & ~(0x60)) ? ESP_OK : ESP_FAIL; // clear DAC mute bits
@@ -106,8 +113,62 @@ bool S3boxCodecReady(void) {
 
 void S3boxAudioPower(uint8_t pwr) {
   g_s3box_amp_on = (pwr != 0);
-  digitalWrite(S3BOX_APWR_GPIO, pwr);
-  AddLog(LOG_LEVEL_INFO, "I2S: amplifier GPIO%d -> %s", S3BOX_APWR_GPIO, g_s3box_amp_on ? "ON" : "OFF");
+  digitalWrite(S3BOX_APWR_GPIO, g_s3box_amp_on ? HIGH : LOW);
+  delay(2);
+  AddLog(LOG_LEVEL_INFO, "I2S: amplifier GPIO%d -> %s (read=%d)", S3BOX_APWR_GPIO, g_s3box_amp_on ? "ON" : "OFF", digitalRead(S3BOX_APWR_GPIO));
+}
+
+void S3boxDumpCodec(const char *tag) {
+  if (!g_es8311_present && !I2cSetDevice(ES8311_ADDR, RLCD_I2C_BUS)) {
+    AddLog(LOG_LEVEL_INFO, "I2S: ES8311 dump %s unavailable", tag ? tag : "");
+    return;
+  }
+  AddLog(LOG_LEVEL_INFO,
+    "I2S: ES8311 dump %s R00=%02X R01=%02X R02=%02X R03=%02X R04=%02X R05=%02X R06=%02X R07=%02X R08=%02X R09=%02X R0A=%02X",
+    tag ? tag : "",
+    ES8311_ReadReg(0x00), ES8311_ReadReg(0x01), ES8311_ReadReg(0x02), ES8311_ReadReg(0x03),
+    ES8311_ReadReg(0x04), ES8311_ReadReg(0x05), ES8311_ReadReg(0x06), ES8311_ReadReg(0x07),
+    ES8311_ReadReg(0x08), ES8311_ReadReg(0x09), ES8311_ReadReg(0x0A));
+  AddLog(LOG_LEVEL_INFO,
+    "I2S: ES8311 dump %s R0D=%02X R0E=%02X R12=%02X R14=%02X R15=%02X R16=%02X R17=%02X R31=%02X R32=%02X R37=%02X R44=%02X R45=%02X RID=%02X/%02X/%02X",
+    tag ? tag : "",
+    ES8311_ReadReg(0x0D), ES8311_ReadReg(0x0E), ES8311_ReadReg(0x12), ES8311_ReadReg(0x14),
+    ES8311_ReadReg(0x15), ES8311_ReadReg(0x16), ES8311_ReadReg(0x17), ES8311_ReadReg(0x31),
+    ES8311_ReadReg(0x32), ES8311_ReadReg(0x37), ES8311_ReadReg(0x44), ES8311_ReadReg(0x45),
+    ES8311_ReadReg(0xFD), ES8311_ReadReg(0xFE), ES8311_ReadReg(0xFF));
+}
+
+void S3boxForcePlaybackCodec(uint32_t hz) {
+  uint8_t sample;
+  if (!S3boxSampleFromHz(hz, sample)) { sample = AUDIO_HAL_16K_SAMPLES; }
+
+  TwoWire *wire = S3boxGetWire();
+  if (!wire || !g_es8311_present) { return; }
+
+  audio_hal_codec_config_t cfg = {
+      .dac_output = AUDIO_HAL_DAC_OUTPUT_LINE1,
+      .codec_mode = AUDIO_HAL_CODEC_MODE_DECODE,
+      .i2s_iface = {
+        .mode = AUDIO_HAL_MODE_SLAVE,
+        .fmt = AUDIO_HAL_I2S_NORMAL,
+        .samples = (audio_hal_iface_samples_t)sample,
+        .bits = AUDIO_HAL_BIT_LENGTH_16BITS,
+      },
+  };
+
+  uint32_t ret_val = ESP_OK;
+  ret_val |= ES8311_WriteReg(0x44, 0x08) ? ESP_OK : ESP_FAIL;  // factory driver writes twice for I2C noise immunity
+  ret_val |= ES8311_WriteReg(0x44, 0x08) ? ESP_OK : ESP_FAIL;
+  ret_val |= es8311_codec_init(wire, &cfg);
+  ret_val |= es8311_codec_config_i2s(AUDIO_HAL_CODEC_MODE_DECODE, &cfg.i2s_iface);
+  ret_val |= es8311_set_bits_per_sample(cfg.i2s_iface.bits);
+  ret_val |= es8311_config_fmt((es_i2s_fmt_t)cfg.i2s_iface.fmt);
+  ret_val |= es8311_set_voice_mute(false);
+  ret_val |= es8311_codec_set_voice_volume(100);
+  ret_val |= es8311_codec_ctrl_state(AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
+  ret_val |= ES8311_ApplyPostInit();
+  AddLog((ret_val == ESP_OK) ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR, "I2S: ES8311 forced playback path at %u Hz result=0x%08X", hz, ret_val);
+  S3boxDumpCodec("playback");
 }
 
 void S3boxSetTxSampleRate(uint32_t hz) {
@@ -119,22 +180,8 @@ void S3boxSetTxSampleRate(uint32_t hz) {
   }
   if (sample == g_s3box_tx_sample) { return; }
 
-  audio_hal_codec_i2s_iface_t iface = {
-    .mode = AUDIO_HAL_MODE_SLAVE,
-    .fmt = AUDIO_HAL_I2S_NORMAL,
-    .samples = (audio_hal_iface_samples_t)sample,
-    .bits = AUDIO_HAL_BIT_LENGTH_16BITS,
-  };
-  uint32_t ret_val = ESP_OK;
-  ret_val |= es8311_codec_config_i2s(AUDIO_HAL_CODEC_MODE_BOTH, &iface);
-  ret_val |= es8311_set_bits_per_sample(iface.bits);
-  ret_val |= es8311_config_fmt((es_i2s_fmt_t)iface.fmt);
-  if (ret_val == ESP_OK) {
-    g_s3box_tx_sample = sample;
-    AddLog(LOG_LEVEL_INFO, "I2S: ES8311 TX sample rate configured to %u Hz", hz);
-  } else {
-    AddLog(LOG_LEVEL_ERROR, "I2S: ES8311 TX sample rate config failed (0x%08X)", ret_val);
-  }
+  S3boxForcePlaybackCodec(hz);
+  g_s3box_tx_sample = sample;
 }
 
 void S3boxSetRxSampleRate(uint32_t hz) {
@@ -250,6 +297,8 @@ uint32_t ES8311_init() {
   }
   g_es8311_present = true;
   I2cSetActiveFound(ES8311_ADDR, "ES8311-I2C", RLCD_I2C_BUS);
+  ES8311_WriteReg(0x44, 0x08);  // improve ES8311 I2C noise immunity; Waveshare writes this twice
+  ES8311_WriteReg(0x44, 0x08);
   audio_hal_codec_config_t cfg = {
       .dac_output = AUDIO_HAL_DAC_OUTPUT_LINE1,
       .codec_mode = AUDIO_HAL_CODEC_MODE_DECODE,
@@ -266,14 +315,14 @@ uint32_t ES8311_init() {
   ret_val = ESP_OK;
   ret_val |= es8311_codec_init(wire, &cfg);
   AddLog(LOG_LEVEL_INFO, "I2S: ES8311 reset done");
-  ret_val |= es8311_codec_config_i2s(AUDIO_HAL_CODEC_MODE_BOTH, &cfg.i2s_iface);
+  ret_val |= es8311_codec_config_i2s(AUDIO_HAL_CODEC_MODE_DECODE, &cfg.i2s_iface);
   AddLog(LOG_LEVEL_INFO, "I2S: ES8311 clocks/I2S format configured");
   ret_val |= es8311_set_bits_per_sample(cfg.i2s_iface.bits);
   ret_val |= es8311_config_fmt((es_i2s_fmt_t)cfg.i2s_iface.fmt);
   ret_val |= es8311_set_voice_mute(false);
-  ret_val |= es8311_codec_set_voice_volume(75);
+  ret_val |= es8311_codec_set_voice_volume(100);
   ret_val |= es8311_set_mic_gain(ES8311_MIC_GAIN_24DB);
-  ret_val |= es8311_codec_ctrl_state(AUDIO_HAL_CODEC_MODE_BOTH, AUDIO_HAL_CTRL_START);
+  ret_val |= es8311_codec_ctrl_state(AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
   ret_val |= ES8311_ApplyPostInit();
 
   int mute = 1;

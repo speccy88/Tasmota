@@ -110,8 +110,10 @@ public:
 
   void setSlotConfig(i2s_port_t i2s_port, uint8_t tx_slot_config,
                      uint8_t tx_slot_mask, uint8_t rx_slot_mask) {
-    // _i2s_port = i2s_port;
+    _i2s_port = i2s_port;
     _tx_slot_config = tx_slot_config;
+    _tx_slot_mask = tx_slot_mask;
+    _rx_slot_mask = rx_slot_mask;
   }
   void setRxFreq(uint16_t freq) { _rx_freq = freq; }   // only sets internal value, does not reconfigure hardware
 
@@ -136,7 +138,7 @@ public:
     AddLog(LOG_LEVEL_DEBUG,"I2S: SetBitsPerSample: %i", bits);
     if ( (bits != 16) && (bits != 8) ) { return false; }
     this->bps = bits;
-    return true;
+    return updateTxSlotConfig();
   }
 
   virtual bool SetChannels(int channels) {
@@ -144,7 +146,7 @@ public:
     if ((channels < 1) || (channels > 2)) { return false; }
     if (channels == (int)this->channels) { return true; }
     this->channels = channels;
-    return true;
+    return updateTxSlotConfig();
   }
 
   virtual bool SetTxRate(int hz) {
@@ -233,6 +235,7 @@ public:
   bool stopTx(void);
   bool ConsumeSample(int16_t sample[2]);
   bool startI2SChannel(bool tx, bool rx);
+  bool releaseHandles(void);
 
   int32_t readMic(uint8_t *buffer, uint32_t size, bool dc_block, bool apply_gain, bool lowpass, uint32_t *peak_ptr);
 
@@ -255,6 +258,7 @@ protected:
   int16_t dcFilter(int16_t pcm_in);
   int16_t lowpassFilter(int16_t pcm_in);
   bool updateTxClockConfig(void);
+  bool updateTxSlotConfig(void);
   bool updateRxClockConfig(void);
 
   bool delTxHandle(void);                 // remove handle
@@ -355,6 +359,9 @@ bool TasmotaI2S::beginTx(void) {
   } else
 #endif // SOC_DAC_SUPPORTED
   {
+    if (!updateTxSlotConfig()) {
+      return false;
+    }
     err = i2s_channel_enable(_tx_handle);
   }
   AddLog(LOG_LEVEL_DEBUG, "I2S: Tx i2s_channel_enable err=0x%04X", err);
@@ -456,6 +463,13 @@ bool TasmotaI2S::delRxHandle(void) {
   return true;
 }
 
+bool TasmotaI2S::releaseHandles(void) {
+  bool ok = true;
+  if (_rx_handle) { ok &= delRxHandle(); }
+  if (_tx_handle) { ok &= delTxHandle(); }
+  return ok;
+}
+
 bool TasmotaI2S::stopRx(void) {
   AddLog(LOG_LEVEL_DEBUG, "I2S: calling stopRx() rx_running:%i rx_handle:%p", _rx_running, _rx_handle);
   if (!_rx_configured) { return false; }    // nothing configured
@@ -522,12 +536,19 @@ int32_t TasmotaI2S::consumeSamples(int16_t *samples, size_t count) {
 
   // AddLog(LOG_LEVEL_DEBUG, "I2S: consumeSamples: left=%i right=%i", ms[0], ms[1]);
 
-  size_t i2s_bytes_written;
+  size_t i2s_bytes_written = 0;
   esp_err_t err = ESP_OK;
   if (isDACMode()) {
     i2s_bytes_written = send_dac_data((uint8_t*)ms, sizeof(ms));
+#if SOC_I2S_SUPPORTS_TDM
+  } else if (_tx_mode == I2S_MODE_TDM) {
+    err = i2s_channel_write(_tx_handle, ms, sizeof(ms), &i2s_bytes_written, 1000);
+#endif // SOC_I2S_SUPPORTS_TDM
   } else {
     err = i2s_channel_write(_tx_handle, ms, sizeof(ms), &i2s_bytes_written, 0);
+  }
+  if (err == ESP_ERR_TIMEOUT) {
+    return 0;
   }
   if (err && err != ESP_ERR_TIMEOUT) {
     AddLog(LOG_LEVEL_INFO, "I2S: Could not write samples (count=%i): %i", count, err);
@@ -569,6 +590,7 @@ bool TasmotaI2S::startI2SChannel(bool tx, bool rx) {
   if (tx && !isDACMode()) {
     // default dma_desc_num = 6 (DMA buffers), dma_frame_num = 240 (frames per buffer)
     i2s_chan_config_t tx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(_i2s_port, I2S_ROLE_MASTER);
+    tx_chan_cfg.auto_clear = true;
 
     AddLog(LOG_LEVEL_DEBUG, "I2S: tx_chan_cfg id:%i role:%i dma_desc_num:%i dma_frame_num:%i auto_clear:%i",
           tx_chan_cfg.id, tx_chan_cfg.role, tx_chan_cfg.dma_desc_num, tx_chan_cfg.dma_frame_num, tx_chan_cfg.auto_clear);
@@ -611,16 +633,74 @@ bool TasmotaI2S::startI2SChannel(bool tx, bool rx) {
     if (_apll) { tx_std_cfg.clk_cfg.clk_src = I2S_CLK_SRC_APLL; }
 #endif // SOC_I2S_SUPPORTS_APLL
 
-    err = i2s_channel_init_std_mode(_tx_handle, &tx_std_cfg);
-    AddLog(LOG_LEVEL_DEBUG, "I2S: i2s_channel_init_std_mode TX channel bits:%i channels:%i hertz:%i err=0x%04X", bps, channels, hertz, err);
+#if SOC_I2S_SUPPORTS_TDM
+    if (_tx_mode == I2S_MODE_TDM) {
+      i2s_tdm_slot_mask_t slot_mask = (i2s_tdm_slot_mask_t)(I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3);
+      i2s_tdm_config_t tx_tdm_cfg = {
+        .clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(hertz),
+        .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, slot_mask),
+        .gpio_cfg = {
+          .mclk = _gpio_mclk,
+          .bclk = _gpio_bclk,
+          .ws   = _gpio_ws,
+          .dout = _gpio_dout,
+          .din  = _DIN,
+          .invert_flags = {
+            .mclk_inv = _gpio_mclk_inv,
+            .bclk_inv = _gpio_bclk_inv,
+            .ws_inv   = _gpio_ws_inv,
+          }
+        }
+      };
+      tx_tdm_cfg.slot_cfg.total_slot = 4;
+#if SOC_I2S_SUPPORTS_APLL
+      if (_apll) { tx_tdm_cfg.clk_cfg.clk_src = I2S_CLK_SRC_APLL; }
+#endif // SOC_I2S_SUPPORTS_APLL
+      err = i2s_channel_init_tdm_mode(_tx_handle, &tx_tdm_cfg);
+      AddLog(LOG_LEVEL_DEBUG, "I2S: i2s_channel_init_tdm_mode TX initial bits:32 slots:4 hertz:%i err=0x%04X", hertz, err);
+    } else
+#endif // SOC_I2S_SUPPORTS_TDM
+    {
+      err = i2s_channel_init_std_mode(_tx_handle, &tx_std_cfg);
+      AddLog(LOG_LEVEL_DEBUG, "I2S: i2s_channel_init_std_mode TX channel bits:%i channels:%i hertz:%i err=0x%04X", bps, channels, hertz, err);
+    }
     if (err != ERR_OK) {
       _tx_handle = nullptr;
       return false;
     }
 
     if (rx) {   // full duplex mode
-      err = i2s_channel_init_std_mode(_rx_handle, &tx_std_cfg);
-      AddLog(LOG_LEVEL_DEBUG, "I2S: i2s_channel_init_std_mode err:%i", err);
+#if SOC_I2S_SUPPORTS_TDM
+      if (_tx_mode == I2S_MODE_TDM) {
+        i2s_tdm_slot_mask_t slot_mask = (i2s_tdm_slot_mask_t)(I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3);
+        i2s_tdm_config_t rx_tdm_cfg = {
+          .clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(hertz),
+          .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO, slot_mask),
+          .gpio_cfg = {
+            .mclk = _gpio_mclk,
+            .bclk = _gpio_bclk,
+            .ws   = _gpio_ws,
+            .dout = _gpio_dout,
+            .din  = _DIN,
+            .invert_flags = {
+              .mclk_inv = _gpio_mclk_inv,
+              .bclk_inv = _gpio_bclk_inv,
+              .ws_inv   = _gpio_ws_inv,
+            }
+          }
+        };
+        rx_tdm_cfg.slot_cfg.total_slot = 4;
+#if SOC_I2S_SUPPORTS_APLL
+        if (_apll) { rx_tdm_cfg.clk_cfg.clk_src = I2S_CLK_SRC_APLL; }
+#endif // SOC_I2S_SUPPORTS_APLL
+        err = i2s_channel_init_tdm_mode(_rx_handle, &rx_tdm_cfg);
+        AddLog(LOG_LEVEL_DEBUG, "I2S: i2s_channel_init_tdm_mode RX err:%i", err);
+      } else
+#endif // SOC_I2S_SUPPORTS_TDM
+      {
+        err = i2s_channel_init_std_mode(_rx_handle, &tx_std_cfg);
+        AddLog(LOG_LEVEL_DEBUG, "I2S: i2s_channel_init_std_mode err:%i", err);
+      }
       AddLog(LOG_LEVEL_DEBUG, "I2S: RX channel added in full duplex mode");
       return true; //do not attempt to init RX later with an extra rx config
     }
@@ -752,6 +832,41 @@ bool TasmotaI2S::startI2SChannel(bool tx, bool rx) {
           }
         }
         break;
+#if SOC_I2S_SUPPORTS_TDM
+      case I2S_MODE_TDM:
+        {
+          i2s_tdm_slot_mask_t slot_mask = (i2s_tdm_slot_mask_t)_rx_slot_mask;
+          i2s_tdm_config_t rx_tdm_cfg = {
+            .clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(_rx_freq),
+            .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(rx_data_bit_width, I2S_SLOT_MODE_STEREO, slot_mask),
+            .gpio_cfg = {
+              .mclk = (gpio_num_t)Pin(GPIO_I2S_MCLK),
+              .bclk = (gpio_num_t)Pin(GPIO_I2S_BCLK),
+              .ws   = (gpio_num_t)Pin(GPIO_I2S_WS),
+              .dout = I2S_GPIO_UNUSED,
+              .din  = (gpio_num_t)Pin(GPIO_I2S_DIN),
+              .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv   = false,
+              },
+            },
+          };
+          rx_tdm_cfg.slot_cfg.total_slot = 2;
+#if SOC_I2S_SUPPORTS_APLL
+          if(audio_i2s.Settings->rx.apll == 1){
+              rx_tdm_cfg.clk_cfg.clk_src = I2S_CLK_SRC_APLL;
+          }
+#endif //SOC_I2S_SUPPORTS_APLL
+          err = i2s_channel_init_tdm_mode(_rx_handle, &rx_tdm_cfg);
+          AddLog(LOG_LEVEL_DEBUG, "I2S: RX i2s_channel_init_tdm_mode with err:%i", err);
+          if (err) {
+            _rx_handle = nullptr;
+            return false;
+          }
+        }
+        break;
+#endif // SOC_I2S_SUPPORTS_TDM
       default:
         AddLog(LOG_LEVEL_INFO, "I2S: invalid rx mode=%i", _rx_mode);
     }
@@ -769,14 +884,29 @@ bool TasmotaI2S::updateTxClockConfig(void) {
       esp_err_t err = i2s_channel_disable(_tx_handle);
       AddLog(LOG_LEVEL_DEBUG, "I2S: updateTxClockConfig i2s_channel_disable err=0x%04X", err);
     }
-    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(hertz);
-  #ifdef SOC_I2S_SUPPORTS_APLL
-    if (_apll) {
-      clk_cfg.clk_src = I2S_CLK_SRC_APLL;
+    esp_err_t result = ESP_ERR_NOT_SUPPORTED;
+#if SOC_I2S_SUPPORTS_TDM
+    if (_tx_mode == I2S_MODE_TDM) {
+      i2s_tdm_clk_config_t clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(hertz);
+#ifdef SOC_I2S_SUPPORTS_APLL
+      if (_apll) {
+        clk_cfg.clk_src = I2S_CLK_SRC_APLL;
+      }
+#endif
+      result = i2s_channel_reconfig_tdm_clock(_tx_handle, &clk_cfg);
+      AddLog(LOG_LEVEL_DEBUG, "I2S: updateTxClockConfig i2s_channel_reconfig_tdm_clock err=0x%04X", result);
+    } else
+#endif // SOC_I2S_SUPPORTS_TDM
+    {
+      i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(hertz);
+#ifdef SOC_I2S_SUPPORTS_APLL
+      if (_apll) {
+        clk_cfg.clk_src = I2S_CLK_SRC_APLL;
+      }
+#endif
+      result = i2s_channel_reconfig_std_clock(_tx_handle, &clk_cfg);
+      AddLog(LOG_LEVEL_DEBUG, "I2S: updateTxClockConfig i2s_channel_reconfig_std_clock err=0x%04X", result);
     }
-  #endif
-    esp_err_t result = i2s_channel_reconfig_std_clock(_tx_handle, &clk_cfg);
-    AddLog(LOG_LEVEL_DEBUG, "I2S: updateTxClockConfig i2s_channel_reconfig_std_clock err=0x%04X", result);
     if (_tx_running) { 
       esp_err_t err = i2s_channel_enable(_tx_handle);
       AddLog(LOG_LEVEL_DEBUG, "I2S: updateTxClockConfig i2s_channel_enable err=0x%04X", err);
@@ -794,6 +924,47 @@ bool TasmotaI2S::updateTxClockConfig(void) {
 
 }
 
+bool TasmotaI2S::updateTxSlotConfig(void) {
+  if (!_tx_handle || isDACMode()) { return true; }
+
+  bool was_running = _tx_running;
+  if (was_running) {
+    esp_err_t err = i2s_channel_disable(_tx_handle);
+    AddLog(LOG_LEVEL_DEBUG, "I2S: updateTxSlotConfig i2s_channel_disable err=0x%04X", err);
+  }
+
+  esp_err_t result = ESP_ERR_NOT_SUPPORTED;
+#if SOC_I2S_SUPPORTS_TDM
+  if (_tx_mode == I2S_MODE_TDM) {
+    i2s_data_bit_width_t data_bit_width = (bps == 8) ? I2S_DATA_BIT_WIDTH_8BIT : I2S_DATA_BIT_WIDTH_16BIT;
+    i2s_tdm_slot_mask_t slot_mask = (i2s_tdm_slot_mask_t)_tx_slot_mask;
+    i2s_tdm_slot_config_t slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(data_bit_width, I2S_SLOT_MODE_STEREO, slot_mask);
+    slot_cfg.total_slot = 2;
+    result = i2s_channel_reconfig_tdm_slot(_tx_handle, &slot_cfg);
+    AddLog(LOG_LEVEL_DEBUG, "I2S: updateTxSlotConfig tdm bits:%i channels:%i mask:%i err=0x%04X", bps, channels, _tx_slot_mask, result);
+  } else
+#endif // SOC_I2S_SUPPORTS_TDM
+  {
+    i2s_slot_mode_t slot_mode = (channels == 1) ? I2S_SLOT_MODE_MONO : I2S_SLOT_MODE_STEREO;
+    i2s_data_bit_width_t data_bit_width = (bps == 8) ? I2S_DATA_BIT_WIDTH_8BIT : I2S_DATA_BIT_WIDTH_16BIT;
+    i2s_std_slot_config_t slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(data_bit_width, slot_mode);
+    if (_tx_slot_config == I2S_SLOT_PCM) {
+      slot_cfg = I2S_STD_PCM_SLOT_DEFAULT_CONFIG(data_bit_width, slot_mode);
+    } else if (_tx_slot_config == I2S_SLOT_PHILIPS) {
+      slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(data_bit_width, slot_mode);
+    }
+    slot_cfg.slot_mask = (i2s_std_slot_mask_t)_tx_slot_mask;
+    result = i2s_channel_reconfig_std_slot(_tx_handle, &slot_cfg);
+    AddLog(LOG_LEVEL_DEBUG, "I2S: updateTxSlotConfig std bits:%i channels:%i mask:%i err=0x%04X", bps, channels, _tx_slot_mask, result);
+  }
+
+  if (was_running) {
+    esp_err_t err = i2s_channel_enable(_tx_handle);
+    AddLog(LOG_LEVEL_DEBUG, "I2S: updateTxSlotConfig i2s_channel_enable err=0x%04X", err);
+  }
+  return result == ESP_OK;
+}
+
 // called when Rx frequency is changed via SetRxRate()
 bool TasmotaI2S::updateRxClockConfig(void) {
   if (!_rx_handle) { return true; }  // no handle yet, nothing to reconfigure
@@ -802,16 +973,28 @@ bool TasmotaI2S::updateRxClockConfig(void) {
     // Full-duplex: single shared clock, must reconfig both TX and RX handles
     this->hertz = _rx_freq;
 
-    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(hertz);
-#if SOC_I2S_SUPPORTS_APLL
-    if (_apll) { clk_cfg.clk_src = I2S_CLK_SRC_APLL; }
-#endif
-
     // disable running channels before reconfig
     if (_tx_running) { i2s_channel_disable(_tx_handle); }
     if (_rx_running) { i2s_channel_disable(_rx_handle); }
 
-    esp_err_t err_tx = i2s_channel_reconfig_std_clock(_tx_handle, &clk_cfg);
+    esp_err_t err_tx = ESP_ERR_NOT_SUPPORTED;
+#if SOC_I2S_SUPPORTS_TDM
+    if (_tx_mode == I2S_MODE_TDM) {
+      i2s_tdm_clk_config_t clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(hertz);
+#if SOC_I2S_SUPPORTS_APLL
+      if (_apll) { clk_cfg.clk_src = I2S_CLK_SRC_APLL; }
+#endif
+      err_tx = i2s_channel_reconfig_tdm_clock(_tx_handle, &clk_cfg);
+    } else
+#endif // SOC_I2S_SUPPORTS_TDM
+    {
+      i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(hertz);
+#if SOC_I2S_SUPPORTS_APLL
+      if (_apll) { clk_cfg.clk_src = I2S_CLK_SRC_APLL; }
+#endif
+      err_tx = i2s_channel_reconfig_std_clock(_tx_handle, &clk_cfg);
+    }
+
     // Only reconfig TX handle — it owns the clock in full-duplex.
     // RX is forced to slave mode and follows TX clock automatically.
     AddLog(LOG_LEVEL_DEBUG, "I2S: updateRxClockConfig(duplex) to %i Hz err=0x%04X ", _rx_freq, err_tx);
@@ -842,6 +1025,15 @@ bool TasmotaI2S::updateRxClockConfig(void) {
 #endif
       result = i2s_channel_reconfig_std_clock(_rx_handle, &clk_cfg);
     } break;
+#if SOC_I2S_SUPPORTS_TDM
+    case I2S_MODE_TDM: {
+      i2s_tdm_clk_config_t clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(_rx_freq);
+#if SOC_I2S_SUPPORTS_APLL
+      if (_apll) { clk_cfg.clk_src = I2S_CLK_SRC_APLL; }
+#endif
+      result = i2s_channel_reconfig_tdm_clock(_rx_handle, &clk_cfg);
+    } break;
+#endif // SOC_I2S_SUPPORTS_TDM
     default:
       AddLog(LOG_LEVEL_DEBUG, "I2S: updateRxClockConfig unsupported mode %i", _rx_mode);
       return false;

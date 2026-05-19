@@ -45,6 +45,72 @@ class AudioEncoder
     WiFiClient *client;
 };
 
+class AudioEncoderWAV : public AudioEncoder
+{
+  public:
+    AudioEncoderWAV(File *rec_file, WiFiClient *wifi) {
+      file = rec_file;
+      client = wifi;
+    };
+    virtual ~AudioEncoderWAV() {
+      if (inBuffer) { free(inBuffer); }
+      if (file) { file->close(); }
+    };
+    virtual uint32_t begin(uint32_t samplingRate, uint32_t inputChannels) {
+      if (!file) { return 6; }
+      sampleRate = samplingRate;
+      channels = inputChannels ? inputChannels : 1;
+      samplesPerPass = sampleRate / 50;      // 20 ms chunks
+      byteSize = samplesPerPass * 2 * channels;
+      inBuffer = (int16_t*)malloc(byteSize);
+      if (!inBuffer) { return 5; }
+      writeHeader(0);
+      return 0;
+    };
+    virtual int encode(size_t samples) {
+      if (!file) { return -1; }
+      size_t len = samples * sizeof(int16_t);
+      size_t written = file->write((uint8_t*)inBuffer, len);
+      dataSize += written;
+      return (written == len) ? 0 : -1;
+    };
+    virtual size_t stop() {
+      if (!file) { return 0; }
+      file->seek(0);
+      writeHeader(dataSize);
+      return 0;
+    };
+
+  protected:
+    void writeLe16(uint16_t value) {
+      file->write((uint8_t)(value & 0xFF));
+      file->write((uint8_t)((value >> 8) & 0xFF));
+    }
+    void writeLe32(uint32_t value) {
+      file->write((uint8_t)(value & 0xFF));
+      file->write((uint8_t)((value >> 8) & 0xFF));
+      file->write((uint8_t)((value >> 16) & 0xFF));
+      file->write((uint8_t)((value >> 24) & 0xFF));
+    }
+    void writeHeader(uint32_t pcmBytes) {
+      file->write((const uint8_t*)"RIFF", 4);
+      writeLe32(36 + pcmBytes);
+      file->write((const uint8_t*)"WAVEfmt ", 8);
+      writeLe32(16);
+      writeLe16(1);                  // PCM
+      writeLe16(channels);
+      writeLe32(sampleRate);
+      writeLe32(sampleRate * channels * 2);
+      writeLe16(channels * 2);
+      writeLe16(16);
+      file->write((const uint8_t*)"data", 4);
+      writeLe32(pcmBytes);
+    }
+    uint32_t sampleRate = 0;
+    uint16_t channels = 1;
+    uint32_t dataSize = 0;
+};
+
 #ifdef MP3_MIC_STREAM
 class AudioEncoderShineMP3 :  public AudioEncoder
 {
@@ -244,9 +310,9 @@ class AudioEncoderOpusWebm : public AudioEncoder
 // micro to mp3/webm - file or stream
 void I2sMicTask(void *arg){
   int8_t error = 0;
-  int written;
+  int written = 0;
 
-  AudioEncoder *mic_enc;
+  AudioEncoder *mic_enc = nullptr;
   File rec_file;
   File *rec_file_ptr = nullptr;
   int16_t *stereo_buf = nullptr;
@@ -277,10 +343,20 @@ void I2sMicTask(void *arg){
 #ifdef MP3_MIC_STREAM
       mic_enc = new AudioEncoderShineMP3(rec_file_ptr, &audio_i2s_mp3.client);
 #endif // MP3_MIC_STREAM
+  } else if (audio_i2s_mp3.encoder_type == WAV_ENCODER) {
+    if (audio_i2s_mp3.use_stream) {
+      error = 3;
+      goto exit;
+    }
+    mic_enc = new AudioEncoderWAV(rec_file_ptr, nullptr);
   } else {
 #ifdef USE_I2S_OPUS
     mic_enc = new AudioEncoderOpusWebm(rec_file_ptr, &audio_i2s_mp3.client);
 #endif // USE_I2S_OPUS
+  }
+  if (!mic_enc) {
+    error = 4;
+    goto exit;
   }
 
   if (audio_i2s_mp3.use_stream) {
@@ -350,15 +426,20 @@ void I2sMicTask(void *arg){
     }
 
     audio_i2s_mp3.recdur = TasmotaGlobal.uptime - ctime;
+    if (audio_i2s_mp3.mic_duration_limit && audio_i2s_mp3.recdur >= audio_i2s_mp3.mic_duration_limit) {
+      break;
+    }
     xTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS(timeForOneRead));
   }
 
   written = mic_enc->stop();
 
-  if (!audio_i2s_mp3.use_stream) {
-    rec_file.write(mic_enc->outFrame, written);
-  } else {
-    audio_i2s_mp3.client.write((const char*)mic_enc->outFrame, written);
+  if (written > 0 && mic_enc->outFrame) {
+    if (!audio_i2s_mp3.use_stream) {
+      rec_file.write(mic_enc->outFrame, written);
+    } else {
+      audio_i2s_mp3.client.write((const char*)mic_enc->outFrame, written);
+    }
   }
 
 exit:
@@ -371,6 +452,7 @@ exit:
   AddLog(LOG_LEVEL_INFO, PSTR("I2S: record task result code: %d, min bytes stack free: %u"), error, (uint32_t)uxTaskGetStackHighWaterMark(NULL)*4);
   audio_i2s_mp3.mic_task_handle = 0;
   audio_i2s_mp3.recdur = 0;
+  audio_i2s_mp3.mic_duration_limit = 0;
   audio_i2s_mp3.stream_active = false;
   vTaskDelete(NULL);
 }
@@ -414,6 +496,9 @@ int32_t I2sRecord(char *path, uint32_t encoder_type) {
       AddLog(LOG_LEVEL_DEBUG, PSTR("I2S: start OPUS encoding: %d Hz"), rec_rate);
       break;
 #endif // USE_I2S_OPUS
+    case WAV_ENCODER:
+      AddLog(LOG_LEVEL_DEBUG, PSTR("I2S: start WAV recording: %d Hz"), rec_rate);
+      break;
     default:
       AddLog(LOG_LEVEL_ERROR, PSTR("I2S: unsupported encoder"));
       return -1;

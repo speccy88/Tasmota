@@ -14,6 +14,20 @@ Key board specs:
 - SHTC3 temperature/humidity sensor and PCF85063 RTC
 - TF card slot, USB-C programming/logging, and expansion headers
 
+Current port status:
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Build target | Working | Active PlatformIO environment is `tasmota32s3-lvgl` using the `ESP32S3_RLCD_4_2` define. |
+| Flashing and boot | Working | Factory and firmware image flash commands are documented below; serial testing has used `/dev/cu.usbmodem1101`. |
+| Display | Working/in progress | ST7305 reflective LCD support is carried in this side branch, including local uDisplay renderer fixes for this board. |
+| Wi-Fi and Tasmota UI | Working | Uses the normal Tasmota ESP32-S3 boot and configuration flow. |
+| I2C peripherals | Working | Bus1 uses GPIO14 SCL and GPIO13 SDA; scan has found `0x18`, `0x40`, `0x51`, and `0x70`. |
+| Audio codec | In progress | ES8311 at `0x18` now initializes reliably on bus1, with deferred retry, register readback, and playback-path setup. |
+| Speaker path | In progress | GPIO46 amplifier control and TDM I2S playback setup are implemented; `I2SPlay` starts and WAV decode selection is available. Audible-output validation is still pending. |
+| Microphone/recording | In progress | WAV recording support and timed `I2SRec <seconds>,<path>` parsing are implemented and build successfully. Hardware validation of captured audio level/quality is still pending. |
+| Filesystem audio files | Pending validation | Next hardware test should create `/mic.wav` with `I2SRec 10,/mic.wav`, then play it with `I2SPlay /mic.wav`. |
+
 Flash Tasmota build (`tasmota32s3-lvgl`):
 
 ```bash

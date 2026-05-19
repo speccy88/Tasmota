@@ -91,3 +91,53 @@ I2SPlay /mic.wav
 ## Notes
 - `I2SRec` still reports that recording did not launch.
 - `I2SPlay /mic.wav` failed because the file was not present.
+
+## 2026-05-17 follow-up
+
+The failed recording command was not reaching the recording task because `I2sRecord()` expected the command index to be an encoder selector. An unsuffixed `I2SRec ...` passed encoder `0`, which was unsupported. The attempted command also used a timed WAV-recording shape (`I2SRec 10,/mic.wav`) while the existing command path only handled MP3/Opus encoders selected by command suffix.
+
+Changes made:
+- Added `WAV_ENCODER` and `WAV_DECODER`.
+- Added a lightweight PCM WAV file encoder for microphone captures.
+- Added extension-based default encoder selection for `I2SRec`:
+  - `.wav` -> WAV
+  - `.opus` / `.webm` -> Opus when enabled
+  - everything else -> MP3
+- Added extension-based default decoder selection for `I2SPlay`:
+  - `.wav` -> WAV
+  - `.opus` / `.webm` -> Opus when enabled
+  - `.aac` / `.m4a` -> AAC when enabled
+  - everything else -> MP3
+- Added parsing for `I2SRec <seconds>,<path>` and automatic stop after the requested duration.
+- Initialized the microphone task encoder pointer and write-result variable defensively.
+
+Build verification:
+
+```bash
+pio run -e tasmota32s3-lvgl
+```
+
+Result: success.
+
+Next on-device test sequence:
+
+```text
+WebLog 4
+SerialLog 4
+I2SStop
+I2SConfig
+I2SMic
+I2SRec 10,/mic.wav
+I2SRec -?
+I2SPlay /mic.wav
+```
+
+Expected behavior:
+- `I2SRec 10,/mic.wav` should respond with `/mic.wav` instead of `Did not launch recording task`.
+- The recording task should stop itself after about 10 seconds.
+- `I2SPlay /mic.wav` should select the WAV decoder automatically and attempt playback.
+
+Still needs hardware validation:
+- Confirm that the WAV file is created in the filesystem.
+- Confirm that recorded audio has a valid signal level and is not silent/noisy.
+- Confirm whether the raw I2S recording path handles the board's configured RX slot width correctly, or whether it needs to use the filtered `readMic()` path instead of direct `i2s_channel_read()`.
