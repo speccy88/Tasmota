@@ -334,7 +334,16 @@ tasmoclaw_commands.timer_command = def(args)
   end
 
   if cmd != 'Timers' && slot != nil && slot != ''
-    cmd += str(slot)
+    var slot_s = str(slot)
+    var slot_l = string.tolower(slot_s)
+    var cmd_l = string.tolower(cmd)
+    if slot_l == cmd_l
+      # Keep bare RuleTimer/PulseTime/Timer reads intact.
+    elif string.find(slot_l, cmd_l) == 0
+      cmd = slot_s
+    else
+      cmd += slot_s
+    end
   end
 
   if action == 'read' || action == 'status' || action == 'show'

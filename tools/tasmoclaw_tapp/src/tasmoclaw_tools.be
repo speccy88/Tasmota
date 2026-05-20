@@ -542,10 +542,13 @@ class TasmoClawTools
   end
 
   def sequence_item_args(item)
-    if type(item) == 'string'
-      return {'command':item}
+    try
+      if item.find('command') != nil || item.find('cmd') != nil || item.find('family') != nil || item.find('tool') != nil
+        return item
+      end
+    except .. as e,m
     end
-    return item
+    return {'command':str(item)}
   end
 
   def sequence_requires_approval(args)
@@ -556,14 +559,18 @@ class TasmoClawTools
 
     for item:items
       var step = self.sequence_item_args(item)
-      if step == nil || type(step) != 'map'
+      if step == nil
         return true
       end
-      var built = tasmoclaw_commands.build(step)
-      if built.find('ok') != true
-        return true
-      end
-      if built.find('safety') != 'read'
+      try
+        var built = tasmoclaw_commands.build(step)
+        if built.find('ok') != true
+          return true
+        end
+        if built.find('safety') != 'read'
+          return true
+        end
+      except .. as e,m
         return true
       end
     end
@@ -583,13 +590,20 @@ class TasmoClawTools
 
     for item:items
       var step = self.sequence_item_args(item)
-      if step == nil || type(step) != 'map'
-        var bad = {'ok':false,'error':'invalid sequence item','index':idx}
+      if step == nil
+        var bad = {'ok':false,'error':'invalid sequence item','index':idx,'item':str(item)}
         results.push(bad)
         return {'ok':false,'results':results,'stopped_at':idx,'error':'invalid sequence item'}
       end
 
-      var r = self.run_built_command(step, sequence_confirm || step.find('confirm') == true)
+      var r = nil
+      try
+        r = self.run_built_command(step, sequence_confirm || step.find('confirm') == true)
+      except .. as e,m
+        var bad2 = {'ok':false,'error':'invalid sequence item: '+str(m),'index':idx,'item':str(item)}
+        results.push(bad2)
+        return {'ok':false,'results':results,'stopped_at':idx,'error':bad2.find('error')}
+      end
       r['index'] = idx
       results.push(r)
       if r.find('ok') != true && !continue_on_error
@@ -683,6 +697,17 @@ class TasmoClawTools
       return self.rule_clear(args)
     elif action == 'set' || action == 'apply' || action == 'write'
       return self.rule_apply(args)
+    end
+
+    var rule_name = args.find('rule')
+    if rule_name == nil || rule_name == ''
+      rule_name = args.find('slot')
+    end
+    if rule_name == nil || rule_name == ''
+      rule_name = 'Rules'
+    end
+    if string.tolower(str(rule_name)) == 'rules'
+      return self.run_cmd_read({'command':'Rules'})
     end
 
     args['family'] = 'rules'

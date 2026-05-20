@@ -429,6 +429,8 @@ class TasmoClawDriver : Driver
             'content':'Your TasmoClaw tool block was incomplete or invalid JSON. Resend exactly one complete tool block with valid JSON and the closing <<<END_TASMOCLAW_TOOL>>> marker. For audio_rtttl_play, keep the RTTTL short but complete.'
           })
           continue
+        elif c != nil && string.find(c, '<<<TASMOCLAW_TOOL>>>') != nil && string.find(c, '<<<TASMOCLAW_TOOL>>>') >= 0
+          c = ''
         end
 
         if last_tool_result == nil && self.request_needs_tool(user) && _i < loops - 1
@@ -529,10 +531,19 @@ class TasmoClawDriver : Driver
       end
 
       var repair = self.tool_choice_repair(user, tc)
-      if repair != nil && _i < loops - 1
-        msgs.push({'role':'assistant','content':c})
-        msgs.push({'role':'user','content':repair})
-        continue
+      if repair != nil
+        if _i < loops - 1
+          msgs.push({'role':'assistant','content':c})
+          msgs.push({'role':'user','content':repair})
+          continue
+        end
+        var repaired_fallback = self.direct_tool_for_user(user)
+        if repaired_fallback != nil
+          tc = repaired_fallback
+        else
+          self.api_json({'ok':false,'error':'model chose an unsuitable tool and no fallback was available','repair':repair})
+          return
+        end
       end
 
       if self.tools.requires_approval_for(tc['tool'], tc['args']) && self.cfg['auto_approve_tools'] != true
@@ -588,6 +599,46 @@ class TasmoClawDriver : Driver
         'role':'user',
         'content':'Original user request:\n'+user+'\n\nTasmoClaw tool result for '+tc['tool']+':\n'+tasmoclaw_util.json_encode(tr)+'\nIf the original request still has uncompleted steps, call the next required TasmoClaw tool now. If all steps are complete, give the user the final answer. Summarize the relevant fields from the result instead of dumping raw JSON. Include ADC/analog values, sensor readings, power states, filenames, paths, byte counts, commands run, and errors when present.'
       })
+    end
+
+    var final_fallback = self.direct_tool_for_user(user)
+    if final_fallback != nil
+      if self.tools.requires_approval_for(final_fallback['tool'], final_fallback['args']) && self.cfg['auto_approve_tools'] != true
+        var final_now = tasmota.rtc().find('local')
+        if final_now == nil
+          final_now = tasmota.rtc().find('utc')
+        end
+
+        self.pending={
+          'id':str(final_now),
+          'tool':final_fallback['tool'],
+          'args':final_fallback['args'],
+          'reason':final_fallback.find('reason'),
+          'created':str(final_now),
+          'assistant':'Fallback TasmoClaw action prepared after tool retry limit.'
+        }
+
+        self.store.save_pending(self.pending)
+        self.trim_history()
+        self.store.save_history(self.history)
+        self.api_json({
+          'ok':true,
+          'approval_required':true,
+          'pending':self.pending,
+          'content':'Approval required for '+final_fallback['tool']
+        })
+        return
+      end
+
+      var final_result = self.tools.run(final_fallback['tool'], final_fallback['args'])
+      var final_trace = self.format_tool_trace(final_fallback['tool'], final_result)
+      var final_content = self.format_tool_answer(user, final_fallback['tool'], final_result)
+      self.history.push({'role':'tool','content':final_trace})
+      self.history.push({'role':'assistant','content':final_content})
+      self.trim_history()
+      self.store.save_history(self.history)
+      self.api_json({'ok':true,'content':final_content,'tool_trace':final_trace,'tool_result':final_result,'fallback':'retry_limit_router'})
+      return
     end
 
     self.api_json({'ok':false,'error':'max_tool_iterations reached'})
@@ -685,7 +736,9 @@ class TasmoClawDriver : Driver
       out += '\nReason: ' + str(result.find('reason'))
     elif tool == 'command_catalog_search'
       out += '\nResult: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result), 700)
-    elif tool == 'command_run' || tool == 'command_sequence_run' || tool == 'audio_rtttl_play' || tool == 'audio_file_play' || tool == 'audio_say' || tool == 'audio_control' || tool == 'display_control' || tool == 'power_control' || tool == 'rule_control' || tool == 'light_control' || tool == 'mqtt_control' || tool == 'telemetry_control' || tool == 'network_control' || tool == 'system_control' || tool == 'timer_control' || tool == 'filesystem_control'
+    elif tool == 'command_sequence_run'
+      out += '\nResult: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result), 900)
+    elif tool == 'command_run' || tool == 'audio_rtttl_play' || tool == 'audio_file_play' || tool == 'audio_say' || tool == 'audio_control' || tool == 'display_control' || tool == 'power_control' || tool == 'rule_control' || tool == 'light_control' || tool == 'mqtt_control' || tool == 'telemetry_control' || tool == 'network_control' || tool == 'system_control' || tool == 'timer_control' || tool == 'filesystem_control'
       out += '\nResult: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(r), 700)
     elif tool == 'berry_skill_template'
       out += '\nCommand: ' + str(result.find('command'))
@@ -1269,6 +1322,17 @@ class TasmoClawDriver : Driver
       end
     end
 
+    var asks_timer_tool = false
+    for tw:['timer_control','ruletimer','pulsetime','timer state','timers','timer ']
+      var twi = string.find(u, tw)
+      if twi != nil && twi >= 0
+        asks_timer_tool = true
+      end
+    end
+    if asks_timer_tool && chosen_tool != 'timer_control'
+      return 'The user asked about Tasmota timers, RuleTimer, PulseTime, Timer, or explicitly requested timer_control. Use timer_control now, not rule_control. For a RuleTimer read, call {"tool":"timer_control","args":{"kind":"rule","action":"read"},"reason":"Read RuleTimer state."}.'
+    end
+
     var asks_rule = false
     var has_rule = string.find(u, 'rule')
     var has_rules = string.find(u, 'rules')
@@ -1488,6 +1552,21 @@ class TasmoClawDriver : Driver
 
     if asks_power
       return {'tool':'power_read','args':{},'reason':'Read relay and power state.'}
+    end
+
+    var asks_timer_direct = false
+    for tkw:['timer_control','ruletimer','pulseTime','pulsetime','timer state','timers']
+      var tki = string.find(u, string.tolower(tkw))
+      if tki != nil && tki >= 0
+        asks_timer_direct = true
+      end
+    end
+    if asks_timer_direct
+      return {
+        'tool':'timer_control',
+        'args':{'kind':'rule','action':'read'},
+        'reason':'Read Tasmota RuleTimer state.'
+      }
     end
 
     var asks_sd = string.find(u, 'sd')
