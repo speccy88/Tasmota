@@ -97,6 +97,128 @@ class TasmoClawLLM
     return status < 0
   end
 
+  def extract_error_message(body)
+    if body == nil || size(body) == 0
+      return ''
+    end
+
+    try
+      var o = json.load(body)
+
+      var e = o.find('error')
+      if e != nil
+        if type(e) == 'string'
+          return str(e)
+        end
+
+        if type(e) == 'map'
+          var msg = e.find('message')
+          if msg != nil
+            return str(msg)
+          end
+
+          msg = e.find('error')
+          if msg != nil
+            return str(msg)
+          end
+
+          msg = e.find('type')
+          if msg != nil
+            return str(msg)
+          end
+        end
+
+        return str(e)
+      end
+
+      var m = o.find('message')
+      if m != nil
+        return str(m)
+      end
+
+      m = o.find('detail')
+      if m != nil
+        return str(m)
+      end
+
+      m = o.find('error_description')
+      if m != nil
+        return str(m)
+      end
+    except .. as e_json,m_json
+    end
+
+    return tasmoclaw_util.preview(body, 220)
+  end
+
+  def http_error(transport, status, body, extra_error)
+    var msg = self.extract_error_message(body)
+    var error = 'HTTP '+str(status)
+
+    if msg != nil && msg != ''
+      error += ': '+msg
+    elif status == 401
+      error += ': unauthorized'
+    elif status == 403
+      error += ': forbidden'
+    elif body == nil || size(body) == 0
+      error += ': empty error body'
+    end
+
+    var r = {
+      'ok':false,
+      'transport':transport,
+      'status':status,
+      'error':error,
+      'body':tasmoclaw_util.preview(body, 500)
+    }
+
+    if status == 401 || status == 403
+      r['hint'] = 'Check the DeepSeek API key in /tasmoclaw/config.'
+    end
+
+    if extra_error != nil
+      r['webclient_error'] = extra_error
+    end
+
+    return r
+  end
+
+  def empty_response_error(transport, status, extra_error)
+    var r = {
+      'ok':false,
+      'transport':transport,
+      'status':status,
+      'error':'HTTP '+str(status)+' returned an empty response body'
+    }
+
+    if extra_error != nil
+      r['webclient_error'] = extra_error
+    end
+
+    return r
+  end
+
+  def webclient_error_name(code)
+    if code == -1 return 'connection refused or timeout' end
+    if code == -2 return 'send header failed' end
+    if code == -3 return 'send payload failed' end
+    if code == -4 return 'not connected' end
+    if code == -5 return 'connection lost' end
+    if code == -6 return 'no stream' end
+    if code == -7 return 'no HTTP server' end
+    if code == -8 return 'too little RAM' end
+    if code == -9 return 'unsupported transfer encoding' end
+    if code == -10 return 'stream write error' end
+    if code == -11 return 'read timeout' end
+    if code < -1000 return 'TLS error '+str(-code - 1000) end
+    return 'webclient transport error'
+  end
+
+  def retryable_webclient_error(code)
+    return code < 0 && code != -8 && code > -1000
+  end
+
   def call_chat_native(cfg, payload_s, headers_s, webclient_error)
     if !global.contains('idf_https_post')
       var msg = 'ESP-IDF HTTPS bridge idf_https_post is not available. Rebuild firmware with USE_TASMOCLAW_HTTPS to use native transport.'
@@ -135,21 +257,11 @@ class TasmoClawLLM
       end
 
       if status < 200 || status >= 300
-        var hr = {
-          'ok':false,
-          'transport':'esp_http_client',
-          'status':status,
-          'error':'HTTP '+str(status),
-          'body':tasmoclaw_util.preview(body, 500)
-        }
-        if webclient_error != nil
-          hr['webclient_error'] = webclient_error
-        end
-        return hr
+        return self.http_error('esp_http_client', status, body, webclient_error)
       end
 
       if body == nil || size(body) == 0
-        return {'ok':false,'transport':'esp_http_client','status':status,'error':'empty response','webclient_error':webclient_error}
+        return self.empty_response_error('esp_http_client', status, webclient_error)
       end
 
       if nr.find('truncated') == true
@@ -172,6 +284,43 @@ class TasmoClawLLM
   end
 
   def call_chat_webclient(cfg, payload_s, native_missing)
+    var attempts = cfg.find('webclient_retries')
+    if attempts == nil
+      attempts = 2
+    else
+      attempts = int(attempts) + 1
+    end
+
+    if attempts < 1
+      attempts = 1
+    end
+
+    if attempts > 3
+      attempts = 3
+    end
+
+    var last = nil
+    var attempt = 0
+
+    while attempt < attempts
+      attempt += 1
+      var r = self.call_chat_webclient_once(cfg, payload_s, native_missing, attempt, attempts)
+      if r.find('ok') == true
+        return r
+      end
+
+      var status = r.find('status')
+      if status == nil || !self.retryable_webclient_error(status) || attempt >= attempts
+        return r
+      end
+
+      last = r
+    end
+
+    return last
+  end
+
+  def call_chat_webclient_once(cfg, payload_s, native_missing, attempt, attempts)
     var cl = nil
 
     try
@@ -215,12 +364,14 @@ class TasmoClawLLM
           'ok': false,
           'transport':'webclient',
           'status':code,
-          'error': 'HTTP '+str(code)+' from Tasmota webclient before receiving a server response',
-          'hint': 'Likely DNS, Wi-Fi, TLS/HTTPS, timeout, heap, unsupported cipher, or webclient build issue.',
+          'error': 'HTTP '+str(code)+' from Tasmota webclient before receiving a server response ('+self.webclient_error_name(code)+')',
+          'hint': 'The TCP/TLS connection may have opened but failed before a valid HTTP response. TasmoClaw retries transient webclient errors once.',
           'fallback_hint':'Set HTTPS transport to auto or native if this firmware includes USE_TASMOCLAW_HTTPS.',
           'api_url': cfg['api_url'],
           'payload_bytes': size(payload_s),
           'model': cfg['model'],
+          'attempt':attempt,
+          'attempts':attempts,
           'native_error':native_missing
         }
       end
@@ -229,17 +380,11 @@ class TasmoClawLLM
       cl.close()
 
       if code < 200 || code >= 300
-        return {
-          'ok':false,
-          'transport':'webclient',
-          'status':code,
-          'error':'HTTP '+str(code),
-          'body':tasmoclaw_util.preview(body, 500)
-        }
+        return self.http_error('webclient', code, body, native_missing)
       end
 
       if body == nil || size(body) == 0
-        return {'ok':false,'transport':'webclient','status':code,'error':'empty response'}
+        return self.empty_response_error('webclient', code, native_missing)
       end
 
       if size(body) > 24000
@@ -383,6 +528,9 @@ class TasmoClawLLM
       var o = json.load(body)
 
       if o.find('choices') == nil || size(o['choices']) == 0
+        if o.find('error') != nil || o.find('message') != nil || o.find('detail') != nil
+          return {'ok':false,'error':'DeepSeek API error: '+self.extract_error_message(body),'body':tasmoclaw_util.preview(body, 500)}
+        end
         return {'ok':false,'error':'DeepSeek response missing choices','body':tasmoclaw_util.preview(body, 500)}
       end
 
@@ -390,6 +538,10 @@ class TasmoClawLLM
 
       if msg == nil || msg.find('content') == nil
         return {'ok':false,'error':'DeepSeek response missing message content','body':tasmoclaw_util.preview(body, 500)}
+      end
+
+      if msg['content'] == nil || size(msg['content']) == 0
+        return {'ok':false,'error':'DeepSeek response had empty assistant content','body':tasmoclaw_util.preview(body, 500)}
       end
 
       return {'ok':true,'content':msg['content'],'raw':o}
