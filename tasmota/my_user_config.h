@@ -666,7 +666,7 @@
 //  #define USE_STCC4                              // [I2cDriver99] Enable Sensiron STCC4 CO2 sensor (I2C address 0x64 or 0x65) (+3k8 code)
 //  #define USE_SEN5X                              // [I2cDriver76] Enable Sensiron SEN5X sensor (I2C address 0x69) (+3k code)
 //  #define USE_SEN6X                              // [I2cDriver97] Enable Sensiron SEN6X sensor (I2C address 0x6B) (+8k8 code)
-//  #define USE_SHT3X                              // [I2cDriver15] Enable Sensiron SHT3x (I2C address 0x44 or 0x45) or SHTC3 (I2C address 0x70) sensor (+0k7 code)
+  #define USE_SHT3X                              // [I2cDriver15] Enable Sensiron SHT3x (I2C address 0x44 or 0x45) or SHTC3 (I2C address 0x70) sensor (+0k7 code)
 //  #define USE_SGP30                              // [I2cDriver18] Enable Sensiron SGP30 sensor (I2C address 0x58) (+1k1 code)
 //  #define USE_SGP40                              // [I2cDriver69] Enable Sensiron SGP40 sensor (I2C address 0x59) (+1k4 code)
 //  #define USE_SGP4X                              // [I2cDriver82] Enable Sensiron SGP41 sensor (I2C address 0x59) (+7k2 code)
@@ -1059,7 +1059,7 @@
     #define IR_RCV_TOLERANCE        25           // Base tolerance percentage for matching incoming IR messages (default 25, max 100)
 
 // -- SD Card support -----------------------------
-// #define USE_SDCARD                               // mount SD Card, requires configured SPI pins and setting of `SDCard CS` gpio
+ #define USE_SDCARD                               // mount SD Card, requires configured SPI pins and setting of `SDCard CS` gpio
   #define SDC_HIDE_INVISIBLES                    // hide hidden directories from the SD Card, which prevents crashes when dealing SD created on MacOS
 
 // -- Zigbee interface ----------------------------
@@ -1259,7 +1259,9 @@
   #define USE_WEBCLIENT_HTTPS                    // Enable HTTPS outgoing requests based on BearSSL (much ligher then mbedTLS, 42KB vs 150KB) in insecure mode (no verification of server's certificate)
                                                  // Note that only two ciphers are enabled: ECDHE_RSA_WITH_AES_128_GCM_SHA256, ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
     #define USE_BERRY_WEBCLIENT_USERAGENT  "TasmotaClient" // default user-agent used, can be changed with `wc.set_useragent()`
-    #define USE_BERRY_WEBCLIENT_TIMEOUT  2000    // Default timeout in milliseconds
+    #ifndef USE_BERRY_WEBCLIENT_TIMEOUT
+      #define USE_BERRY_WEBCLIENT_TIMEOUT  2000  // Default timeout in milliseconds
+    #endif
   #define USE_BERRY_TCPSERVER                    // Enable TCP socket server (+0.6k)
   // #define USE_BERRY_MQTTCLIENT                  // Enable standalone, independent Berry MQTT client (+5.1k)
   // #define USE_BERRY_ULP                          // Enable ULP (Ultra Low Power) support (+4.9k)

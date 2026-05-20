@@ -44,6 +44,9 @@ extern "C" {
 extern "C" {
   extern void be_load_custom_libs(bvm *vm);
   extern void be_tracestack(bvm *vm);
+#if defined(USE_TASMOCLAW_HTTPS) && defined(ESP32)
+  extern void be_load_tasmoclaw_https_lib(bvm *vm);
+#endif
 }
 
 const char kBrCommands[] PROGMEM = D_PRFX_BR "|"    // prefix
@@ -401,6 +404,9 @@ void BerryInit(void) {
     }
 
     be_load_custom_libs(berry.vm);  // load classes and modules
+#if defined(USE_TASMOCLAW_HTTPS) && defined(ESP32)
+    be_load_tasmoclaw_https_lib(berry.vm);
+#endif
 
     // Set the GC threshold to 3584 bytes to avoid the first useless GC
     berry.vm->gc.threshold = 3584;

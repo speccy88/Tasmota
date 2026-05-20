@@ -384,10 +384,14 @@ uint8_t WiFiClientSecure_light::connected() {
   return false;
 }
 
+bool WiFiClientSecure_light::tlsConnected() {
+  return _handshake_done && (_clientConnected() || WiFiClient::available());
+}
+
 size_t WiFiClientSecure_light::_write(const uint8_t *buf, size_t size, bool pmem) {
   size_t sent_bytes = 0;
 
-  if (!connected() || !size || !_handshake_done) {
+  if (!tlsConnected() || !size) {
     return 0;
   }
 
