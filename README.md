@@ -28,6 +28,53 @@ Current port status:
 | Microphone/recording | In progress | WAV recording support and timed `I2SRec <seconds>,<path>` parsing are implemented and build successfully. Hardware validation of captured audio level/quality is still pending. |
 | Filesystem audio files | Pending validation | Next hardware test should create `/mic.wav` with `I2SRec 10,/mic.wav`, then play it with `I2SPlay /mic.wav`. |
 | TRMNL dashboard display | Working via local bridge | `lv.trmnl_show_png(path, rotation)` renders 1-bit TRMNL frames through LVGL. `tools/rlcd_trmnl/autoexec.be` starts 5 seconds after boot, fetches indefinitely, uses TRMNL `refresh_rate` timing, and keeps only the current frame on the filesystem. Because direct HTTPS to TRMNL is not reliable with the lightweight board TLS stack, `tools/rlcd_trmnl/trmnl_bridge.py` performs the HTTPS/API hop off-device and serves a half-resolution 1-bit PBM frame over local HTTP. |
+| TasmoClaw AI tools | Working on test board | `tools/tasmoclaw_tapp/` builds a Berry/TAPP web chat application for this board. It talks directly to DeepSeek, uses a small native HTTPS/UFS bridge for reliable ESP32-S3 HTTPS and SD access, and exposes guarded tools for reading sensors, power, rules, SD files, Berry programs, and applying approved Tasmota changes. |
+
+### TasmoClaw AI tool app
+
+TasmoClaw is an experimental Tasmota Application for the ESP32-S3-RLCD-4.2 build. The app itself is Berry code packaged as a local `.tapp`; the firmware side only adds a small optional native helper for HTTPS POST and SD/UFS access. It is not a proxy, MCP bridge, streaming client, Telegram bot, or external local service.
+
+At runtime, upload and load `tools/tasmoclaw_tapp/dist/tasmoclaw.tapp`, then open:
+
+```text
+http://<device-ip>/tasmoclaw
+```
+
+The config page is:
+
+```text
+http://<device-ip>/tasmoclaw/config
+```
+
+TasmoClaw works by giving the model a compact registry of device tools. For requests that depend on live device state, filesystem contents, rules, sensors, relays, or Berry files, the model must call a tool first. TasmoClaw executes one tool at a time, feeds the result back to the model, and only then asks for a human-friendly answer. Write operations and unsafe Tasmota commands create a pending approval unless auto-approval is enabled in the config page.
+
+Important pieces:
+
+- `tools/tasmoclaw_tapp/build_tapp.py` generates the uploadable `.tapp`; generated `dist/` artifacts are ignored and should not be committed.
+- `tasmota/tasmota_xdrv_driver/xdrv_99_tasmoclaw_https.ino` exposes `idf_https_post()` and native SD/UFS helpers to Berry when `USE_TASMOCLAW_HTTPS` is enabled.
+- The default DeepSeek endpoint is `https://api.deepseek.com/chat/completions`, with `deepseek-v4-flash` as the default model and `deepseek-v4-pro` as the heavier option.
+- `TasmoClawHttpsTest` checks the native HTTPS bridge and saved DeepSeek configuration from the Tasmota command console.
+- Storage files are visible on the Tasmota filesystem as `/tasmoclaw_config.json`, `/tasmoclaw_history.json`, and `/tasmoclaw_pending.json`.
+
+Typical prompts include:
+
+```text
+What are all the live sensor values?
+What are all the rules on the board?
+Read power state, then toggle power 2.
+Write "hello world" to hello_world.txt on the SD card.
+Read memory.md from the SD card.
+Create a Berry hello world program, then run it and explain it.
+```
+
+Build the TAPP locally:
+
+```bash
+cd tools/tasmoclaw_tapp
+python3 build_tapp.py
+```
+
+The detailed TasmoClaw implementation notes, smoke checklist, and troubleshooting guide live in [`tools/tasmoclaw_tapp/README.md`](tools/tasmoclaw_tapp/README.md).
 
 TRMNL bridge setup keeps API credentials out of the Berry script and out of the repository. Store credentials locally on the bridge host, or export them as environment variables:
 
