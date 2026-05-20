@@ -230,15 +230,47 @@ verify_SKE_sig(br_ssl_client_context *ctx,
 	if (use_rsa) {
 		unsigned char tmp[64];
 		const unsigned char *hash_oid;
+		const br_hash_class *pss_hash;
+		br_rsa_pss_vrfy pss_vrfy;
+		size_t salt_len;
+		int pss_ok;
 
 		if (hash) {
 			hash_oid = HASH_OID[hash - 2];
 		} else {
 			hash_oid = NULL;
 		}
-		if (!ctx->eng.irsavrfy(ctx->eng.pad, sig_len,
+		if (ctx->eng.irsavrfy(ctx->eng.pad, sig_len,
 			hash_oid, hv_len, &pk->key.rsa, tmp)
-			|| memcmp(tmp, hv, hv_len) != 0)
+			&& memcmp(tmp, hv, hv_len) == 0)
+		{
+			return 0;
+		}
+		pss_hash = NULL;
+		switch (hash) {
+		case br_sha256_ID:
+			pss_hash = &br_sha256_vtable;
+			break;
+		case br_sha384_ID:
+			pss_hash = &br_sha384_vtable;
+			break;
+		case br_sha512_ID:
+			pss_hash = &br_sha512_vtable;
+			break;
+		}
+		pss_vrfy = br_rsa_pss_vrfy_get_default();
+		pss_ok = 0;
+		if (pss_hash != NULL && pss_vrfy != NULL) {
+				for (salt_len = 0; salt_len <= sig_len; salt_len++) {
+				if (pss_vrfy(ctx->eng.pad, sig_len,
+					pss_hash, pss_hash, hv, salt_len, &pk->key.rsa))
+				{
+					pss_ok = 1;
+					break;
+				}
+			}
+		}
+		if (!pss_ok)
 		{
 			return BR_ERR_BAD_SIGNATURE;
 		}

@@ -187,7 +187,9 @@ AsyncHttpClientLight::BearSslAdapter::BearSslAdapter(
     const uint8_t* pin2, bool hasPin2,
     bool rsaOnly) {
 
-  _cli.reset(new BearSSL::WiFiClientSecure_light(16384, 0));
+  _cli.reset(new BearSSL::WiFiClientSecure_light(16384, 1024));
+  static const char *alpn[] = { "http/1.1" };
+  _cli->setALPN(alpn, 1);
   static const uint8_t any[20] = {0};
 
   if (hasPin1 || hasPin2) {
@@ -210,7 +212,7 @@ bool AsyncHttpClientLight::BearSslAdapter::connectIP(IPAddress ip, uint16_t port
 size_t AsyncHttpClientLight::BearSslAdapter::write(const uint8_t* data, size_t len) { return _cli->write(data, len); }
 int    AsyncHttpClientLight::BearSslAdapter::read(uint8_t* buf, size_t len)        { return _cli->read(buf, len); }
 int    AsyncHttpClientLight::BearSslAdapter::available()                            { return _cli->available(); }
-bool   AsyncHttpClientLight::BearSslAdapter::connected()                            { return _cli->connected(); }
+bool   AsyncHttpClientLight::BearSslAdapter::connected()                            { return _cli->tlsConnected(); }
 void   AsyncHttpClientLight::BearSslAdapter::stop()                                 { _cli->stop(); }
 void   AsyncHttpClientLight::BearSslAdapter::setTimeout(uint16_t ms)                { _cli->setTimeout(ms); }
 #endif

@@ -81,7 +81,10 @@ public:
 
     std::unique_ptr<WiFiClient> create() override
     {
-        std::unique_ptr<WiFiClient> p = std::unique_ptr<WiFiClient>(new BearSSL::WiFiClientSecure_light(_recv, _xmit));
+        BearSSL::WiFiClientSecure_light *wcs = new BearSSL::WiFiClientSecure_light(_recv, _xmit);
+        static const char *alpn[] = { "http/1.1" };
+        wcs->setALPN(alpn, 1);
+        std::unique_ptr<WiFiClient> p = std::unique_ptr<WiFiClient>(wcs);
         return p;
     }
 
@@ -221,9 +224,8 @@ bool HTTPClientLight::begin(String url, const char* CAcert)
     }
     _secure = true;
 #ifdef USE_WEBCLIENT_HTTPS
-    _transportTraits = TransportTraitsLightPtr(new BearSSLTraits(16384, 0));
-    // set buffer to 16KB half duplex, so we won't lose responses bigger than 16KB
-    // half duplex is well suited for HTTPS: one request followed by responses
+    _transportTraits = TransportTraitsLightPtr(new BearSSLTraits(4096, 1024));
+    // Keep the Berry HTTPS client small enough for ESP32 webserver callbacks.
 #else
     _transportTraits = nullptr;
 #endif
@@ -1273,12 +1275,23 @@ int HTTPClientLight::handleHeaderResponse()
             log_v("RX: '%s'", headerLine.c_str());
 
             if(firstLine) {
-		firstLine = false;
+                firstLine = false;
                 if(_canReuse && headerLine.startsWith("HTTP/1.")) {
                     _canReuse = (headerLine[sizeof "HTTP/1." - 1] != '0');
                 }
-                int codePos = headerLine.indexOf(' ') + 1;
-                _returnCode = headerLine.substring(codePos, headerLine.indexOf(' ', codePos)).toInt();
+                if (headerLine.startsWith("HTTP/")) {
+                    int codePos = headerLine.indexOf(' ');
+                    while (codePos >= 0 && codePos < (int)headerLine.length() && headerLine[codePos] == ' ') {
+                        codePos++;
+                    }
+                    int codeEnd = codePos;
+                    while (codeEnd >= 0 && codeEnd < (int)headerLine.length() && isDigit(headerLine[codeEnd])) {
+                        codeEnd++;
+                    }
+                    if (codePos >= 0 && codeEnd > codePos) {
+                        _returnCode = headerLine.substring(codePos, codeEnd).toInt();
+                    }
+                }
             } else if(headerLine.indexOf(':')) {
                 String headerName = headerLine.substring(0, headerLine.indexOf(':'));
                 String headerValue = headerLine.substring(headerLine.indexOf(':') + 1);

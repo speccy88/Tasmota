@@ -353,6 +353,23 @@ extern "C" {
     be_raise(vm, kTypeError, nullptr);
   }
 
+  // wc.use_http10(bool) -> self
+  int32_t wc_use_http10(struct bvm *vm);
+  int32_t wc_use_http10(struct bvm *vm) {
+    int32_t argc = be_top(vm);
+    if (argc >= 2 && be_isbool(vm, 2)) {
+#ifdef USE_BERRY_WEBCLIENT_ASYNC
+      AsyncHttpClientLight * cl = wc_getclient(vm);
+#else
+      HTTPClientLight * cl = wc_getclient(vm);
+#endif
+      cl->useHTTP10(be_tobool(vm, 2));
+      be_pushvalue(vm, 1);
+      be_return(vm);
+    }
+    be_raise(vm, kTypeError, nullptr);
+  }
+
   // wc.collect_headers( [header:string]+ ) -> self
   int32_t wc_collect_headers(struct bvm *vm);
   int32_t wc_collect_headers(struct bvm *vm) {
