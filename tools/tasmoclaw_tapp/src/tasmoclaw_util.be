@@ -54,10 +54,34 @@ class TasmoClawUtil
     if size(s) <= limit return s end
     return s[0..limit-1]
   end
+
+  def safe_url(url)
+    if url == nil return '' end
+    var s = str(url)
+    var qi = string.find(s, '?')
+    if qi != nil && qi >= 0
+      if qi == 0
+        return '?...'
+      end
+      return s[0..qi-1] + '?...'
+    end
+    return s
+  end
+
+  def debug(msg)
+    try
+      if tasmota.loglevel(4)
+        tasmota.log('TCL: ' + str(msg), 4)
+      end
+    except .. as e,m
+    end
+  end
 end
 
 var _util = TasmoClawUtil()
 var tasmoclaw_util = module("tasmoclaw_util")
 tasmoclaw_util.json_encode = def(v) return _util.json_encode(v) end
 tasmoclaw_util.preview = def(s, limit) return _util.preview(s, limit) end
+tasmoclaw_util.safe_url = def(url) return _util.safe_url(url) end
+tasmoclaw_util.debug = def(msg) return _util.debug(msg) end
 return tasmoclaw_util

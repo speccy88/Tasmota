@@ -15,6 +15,7 @@ class TasmoClawDriver : Driver
   var store, tools, llm, ui, cfg, history, pending
 
   def init()
+    tasmoclaw_util.debug('driver init start')
     self.store = tasmoclaw_store.create()
     self.store.ensure_workspace()
 
@@ -27,6 +28,7 @@ class TasmoClawDriver : Driver
     self.pending = self.store.load_pending()
 
     self.ensure_cmds()
+    tasmoclaw_util.debug('driver init done history=' + str(size(self.history)) + ' pending=' + str(self.pending != nil) + ' transport=' + str(self.cfg.find('https_transport')))
   end
 
   def ensure_cmds()
@@ -34,6 +36,7 @@ class TasmoClawDriver : Driver
     tasmota.add_cmd('TasmoClawReset', /cmd,idx,payload -> self.cmd_reset())
     tasmota.add_cmd('TasmoClawTest', /cmd,idx,payload -> self.cmd_test())
     tasmota.add_cmd('TasmoClawHttpsTest', /cmd,idx,payload -> self.cmd_https_test())
+    tasmoclaw_util.debug('commands registered')
   end
 
   def cmd_status()
@@ -57,6 +60,7 @@ class TasmoClawDriver : Driver
   end
 
   def https_test_obj()
+    tasmoclaw_util.debug('https test start')
     var out = {
       'ok':true,
       'configured_transport':self.cfg.find('https_transport') == nil ? 'webclient' : self.cfg['https_transport']
@@ -89,8 +93,10 @@ class TasmoClawDriver : Driver
         'content':tasmoclaw_util.preview(r.find('content'), 120),
         'body':tasmoclaw_util.preview(r.find('body'), 220)
       }
+      tasmoclaw_util.debug('https test deepseek ok=' + str(r.find('ok')) + ' transport=' + str(r.find('transport')) + ' status=' + str(r.find('status')) + ' error=' + str(r.find('error')))
     end
 
+    tasmoclaw_util.debug('https test done')
     return out
   end
 
@@ -115,6 +121,7 @@ class TasmoClawDriver : Driver
   end
 
   def web_add_handler()
+    tasmoclaw_util.debug('web handlers registering')
     webserver.on('/tasmoclaw', / -> self.ui.chat_page(), webserver.HTTP_GET)
     webserver.on('/tasmoclaw/config', / -> self.page_config(), webserver.HTTP_GET)
 
@@ -155,13 +162,15 @@ class TasmoClawDriver : Driver
     webserver.content_send('<label>Reasoning effort</label><select id="reasoning_effort"><option>high</option><option>max</option></select>')
     webserver.content_send('<label>Max tool iterations</label><input id="max_tool_iterations" type="number" min="1">')
     webserver.content_send('<label>History limit</label><input id="history_limit" type="number" min="1">')
+    webserver.content_send('<label>Prompt mode</label><select id="prompt_mode"><option>compact</option><option>full</option></select>')
+    webserver.content_send('<label>Context byte limit</label><input id="context_byte_limit" type="number" min="1200">')
     webserver.content_send('<p><label style="display:flex;gap:8px;align-items:center"><input id="auto_approve_tools" type="checkbox" style="width:auto"> Disable permission prompts</label></p>')
     webserver.content_send('<label>System extra</label><textarea id="system_extra"></textarea>')
     webserver.content_send('<p><button id="save">Save</button> <button id="test">Test API</button></p>')
     webserver.content_send('<div id="msg" class="msg"></div>')
     webserver.content_send('</div>')
 
-    webserver.content_send('<script>const ids=["api_url","model","https_transport","api_key","temperature","max_tokens","thinking","reasoning_effort","max_tool_iterations","history_limit","system_extra"];const el=id=>document.getElementById(id);const note=t=>el("msg").textContent=t;function setCfg(c){ids.forEach(id=>{if(c[id]!=null)el(id).value=c[id];});el("auto_approve_tools").checked=!!c.auto_approve_tools;}function getCfg(){fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>setCfg(x.config||{})).catch(e=>note(String(e)));}function body(){let c={};ids.forEach(id=>c[id]=el(id).value);c.temperature=parseFloat(c.temperature);c.max_tokens=parseInt(c.max_tokens);c.max_tool_iterations=parseInt(c.max_tool_iterations);c.history_limit=parseInt(c.history_limit);c.auto_approve_tools=el("auto_approve_tools").checked;return c;}function testText(x){if(x.ok)return (x.content||"OK")+" via "+(x.transport||"?")+" HTTP "+(x.status||"?");let p=[x.error||"Test failed"];if(x.transport)p.push("transport "+x.transport);if(x.status!=null)p.push("status "+x.status);if(x.attempts)p.push("attempt "+(x.attempt||"?")+"/"+x.attempts);if(x.stage)p.push("stage "+x.stage);if(x.esp_err!=null)p.push("esp_err "+x.esp_err);if(x.hint)p.push(x.hint);if(x.body)p.push("body: "+x.body);if(x.fallback_hint)p.push(x.fallback_hint);if(x.webclient_error)p.push("webclient: "+x.webclient_error);return p.join(" | ");}el("save").onclick=()=>{note("Saving...");fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>{note(x.ok?"Saved":(x.error||"Save failed"));if(x.config)setCfg(x.config);}).catch(e=>note(String(e)));};el("test").onclick=()=>{note("Testing...");fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>note(testText(x))).catch(e=>note(String(e)));};getCfg();</script>')
+    webserver.content_send('<script>const ids=["api_url","model","https_transport","api_key","temperature","max_tokens","thinking","reasoning_effort","max_tool_iterations","history_limit","prompt_mode","context_byte_limit","system_extra"];const el=id=>document.getElementById(id);const note=t=>el("msg").textContent=t;function setCfg(c){ids.forEach(id=>{if(c[id]!=null)el(id).value=c[id];});el("auto_approve_tools").checked=!!c.auto_approve_tools;}function getCfg(){fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>setCfg(x.config||{})).catch(e=>note(String(e)));}function body(){let c={};ids.forEach(id=>c[id]=el(id).value);c.temperature=parseFloat(c.temperature);c.max_tokens=parseInt(c.max_tokens);c.max_tool_iterations=parseInt(c.max_tool_iterations);c.history_limit=parseInt(c.history_limit);c.context_byte_limit=parseInt(c.context_byte_limit);c.auto_approve_tools=el("auto_approve_tools").checked;return c;}function testText(x){if(x.ok)return (x.content||"OK")+" via "+(x.transport||"?")+" HTTP "+(x.status||"?");let p=[x.error||"Test failed"];if(x.transport)p.push("transport "+x.transport);if(x.status!=null)p.push("status "+x.status);if(x.attempts)p.push("attempt "+(x.attempt||"?")+"/"+x.attempts);if(x.stage)p.push("stage "+x.stage);if(x.esp_err!=null)p.push("esp_err "+x.esp_err);if(x.hint)p.push(x.hint);if(x.body)p.push("body: "+x.body);if(x.fallback_hint)p.push(x.fallback_hint);if(x.webclient_error)p.push("webclient: "+x.webclient_error);return p.join(" | ");}el("save").onclick=()=>{note("Saving...");fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>{note(x.ok?"Saved":(x.error||"Save failed"));if(x.config)setCfg(x.config);}).catch(e=>note(String(e)));};el("test").onclick=()=>{note("Testing...");fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>note(testText(x))).catch(e=>note(String(e)));};getCfg();</script>')
 
     webserver.content_stop()
   end
@@ -249,6 +258,14 @@ class TasmoClawDriver : Driver
       cfg['history_limit'] = defaults['history_limit']
     end
 
+    if cfg['prompt_mode'] != 'full'
+      cfg['prompt_mode'] = 'compact'
+    end
+
+    if cfg['context_byte_limit'] == nil || cfg['context_byte_limit'] < 1200
+      cfg['context_byte_limit'] = defaults['context_byte_limit']
+    end
+
     if cfg['auto_approve_tools'] != true
       cfg['auto_approve_tools'] = false
     end
@@ -267,17 +284,21 @@ class TasmoClawDriver : Driver
   end
 
   def api_config_get()
+    tasmoclaw_util.debug('api config get')
     self.api_json({'ok':true,'config':self.masked_cfg()})
   end
 
   def api_config_post()
     try
+      tasmoclaw_util.debug('api config post start')
       if !webserver.has_arg('plain')
+        tasmoclaw_util.debug('api config post failed: missing JSON body')
         self.api_json({'ok':false,'error':'missing JSON body'})
         return
       end
 
       var incoming=json.load(webserver.arg('plain'))
+      tasmoclaw_util.debug('api config parsed keys=' + str(size(incoming.keys())))
       var old=self.cfg['api_key']
 
       for k:incoming.keys()
@@ -293,12 +314,15 @@ class TasmoClawDriver : Driver
       var r = self.store.save_config(self.cfg)
 
       if r['ok']
+        tasmoclaw_util.debug('api config saved transport=' + str(self.cfg.find('https_transport')) + ' model=' + str(self.cfg.find('model')) + ' auto_approve=' + str(self.cfg.find('auto_approve_tools')))
         self.api_json({'ok':true,'config':self.masked_cfg(),'storage':r})
       else
+        tasmoclaw_util.debug('api config save failed: ' + str(r.find('error')))
         self.api_json(r)
       end
 
     except .. as e,m
+      tasmoclaw_util.debug('api config exception: ' + str(e) + ' ' + str(m))
       self.api_json({'ok':false,'error':'config save failed: '+str(m)})
     end
   end
@@ -307,8 +331,10 @@ class TasmoClawDriver : Driver
     var req=nil
 
     try
+      tasmoclaw_util.debug('api chat start body_bytes=' + str(size(webserver.arg('plain'))))
       req=json.load(webserver.arg('plain'))
     except .. as e,m
+      tasmoclaw_util.debug('api chat invalid JSON: ' + str(e) + ' ' + str(m))
       self.api_json({'ok':false,'error':'invalid JSON body: '+str(m)})
       return
     end
@@ -316,9 +342,12 @@ class TasmoClawDriver : Driver
     var user=req['message']
 
     if user == nil || user == ''
+      tasmoclaw_util.debug('api chat failed: missing message')
       self.api_json({'ok':false,'error':'missing message'})
       return
     end
+
+    tasmoclaw_util.debug('api chat message bytes=' + str(size(user)) + ' history=' + str(size(self.history)) + ' pending=' + str(self.pending != nil))
 
     # Let the model choose tools first. The old direct router is kept below as
     # a fallback helper, but hard-coded intents should not preempt normal chat.
@@ -411,18 +440,22 @@ class TasmoClawDriver : Driver
     var later_action_repair_used = false
 
     for _i:range(0,loops)
+      tasmoclaw_util.debug('chat loop iteration=' + str(_i + 1) + '/' + str(loops) + ' messages=' + str(size(msgs)))
       var r=self.llm.call_chat(self.cfg,msgs)
 
       if !r['ok']
+        tasmoclaw_util.debug('chat llm failed iteration=' + str(_i + 1) + ' transport=' + str(r.find('transport')) + ' status=' + str(r.find('status')) + ' error=' + str(r.find('error')))
         self.api_json(r)
         return
       end
 
       var c=r['content']
+      tasmoclaw_util.debug('chat llm ok iteration=' + str(_i + 1) + ' transport=' + str(r.find('transport')) + ' status=' + str(r.find('status')) + ' content_bytes=' + str(c == nil ? 0 : size(c)))
       var tc=self.parse_tool_block(c)
 
       if tc==nil
         if c != nil && string.find(c, '<<<TASMOCLAW_TOOL>>>') != nil && string.find(c, '<<<TASMOCLAW_TOOL>>>') >= 0 && _i < loops - 1
+          tasmoclaw_util.debug('chat tool block invalid/incomplete; requesting repair')
           msgs.push({'role':'assistant','content':c})
           msgs.push({
             'role':'user',
@@ -434,6 +467,7 @@ class TasmoClawDriver : Driver
         end
 
         if last_tool_result == nil && self.request_needs_tool(user) && _i < loops - 1
+          tasmoclaw_util.debug('chat model answered without required tool; requesting tool')
           msgs.push({
             'role':'user',
             'content':'You answered without using a tool, but this request depends on current device state or files. Respond with exactly one TasmoClaw tool block using the listed tools. Do not answer from chat history.'
@@ -442,6 +476,7 @@ class TasmoClawDriver : Driver
         end
 
         if (c == nil || c == '') && last_tool_result == nil && _i < loops - 1
+          tasmoclaw_util.debug('chat empty response without tool; requesting repair')
           msgs.push({
             'role':'user',
             'content':'Your previous response was empty. If this request needs current device state, filesystem data, SD-card data, sensors, power state, rules, or Berry files, respond with exactly one TasmoClaw tool block using the listed tools. Otherwise answer normally.'
@@ -452,6 +487,7 @@ class TasmoClawDriver : Driver
         if last_tool_result != nil
           if self.request_has_later_action(user) && !action_tool_seen && !later_action_repair_used && _i < loops - 1
             later_action_repair_used = true
+            tasmoclaw_util.debug('chat later action still pending; requesting next tool')
             msgs.push({
               'role':'user',
               'content':'The original user request has a later action step that is not complete yet. Call the next required TasmoClaw tool now. Do not give the final answer yet.'
@@ -480,6 +516,7 @@ class TasmoClawDriver : Driver
           var fallback = self.direct_tool_for_user(user)
           if fallback != nil
             if self.tools.requires_approval_for(fallback['tool'], fallback['args']) && self.cfg['auto_approve_tools'] != true
+              tasmoclaw_util.debug('chat fallback approval required tool=' + str(fallback['tool']))
               var fallback_now = tasmota.rtc().find('local')
               if fallback_now == nil
                 fallback_now = tasmota.rtc().find('utc')
@@ -509,6 +546,7 @@ class TasmoClawDriver : Driver
             var fallback_result = self.tools.run(fallback['tool'], fallback['args'])
             var fallback_trace = self.format_tool_trace(fallback['tool'], fallback_result)
             c = self.format_tool_answer(user, fallback['tool'], fallback_result)
+            tasmoclaw_util.debug('chat fallback tool result tool=' + str(fallback['tool']) + ' ok=' + str(fallback_result.find('ok')))
             self.history.push({'role':'tool','content':fallback_trace})
             self.history.push({'role':'assistant','content':c})
             self.trim_history()
@@ -521,6 +559,7 @@ class TasmoClawDriver : Driver
         self.history.push({'role':'assistant','content':c})
         self.trim_history()
         self.store.save_history(self.history)
+        tasmoclaw_util.debug('chat final answer saved content_bytes=' + str(c == nil ? 0 : size(c)))
         var resp = {'ok':true,'content':c}
         if tool_trace != ''
           resp['tool_trace'] = tool_trace
@@ -532,6 +571,7 @@ class TasmoClawDriver : Driver
 
       var repair = self.tool_choice_repair(user, tc)
       if repair != nil
+        tasmoclaw_util.debug('chat tool choice repair needed tool=' + str(tc.find('tool')))
         if _i < loops - 1
           msgs.push({'role':'assistant','content':c})
           msgs.push({'role':'user','content':repair})
@@ -542,10 +582,12 @@ class TasmoClawDriver : Driver
           tc = repaired_fallback
         else
           self.api_json({'ok':false,'error':'model chose an unsuitable tool and no fallback was available','repair':repair})
+          tasmoclaw_util.debug('chat tool choice repair failed with no fallback')
           return
         end
       end
 
+      tasmoclaw_util.debug('chat tool selected tool=' + str(tc.find('tool')) + ' approval=' + str(self.tools.requires_approval_for(tc['tool'], tc['args'])) + ' auto_approve=' + str(self.cfg['auto_approve_tools']))
       if self.tools.requires_approval_for(tc['tool'], tc['args']) && self.cfg['auto_approve_tools'] != true
         var now = tasmota.rtc().find('local')
         if now == nil
@@ -563,6 +605,7 @@ class TasmoClawDriver : Driver
         }
 
         self.store.save_pending(self.pending)
+        tasmoclaw_util.debug('chat pending saved tool=' + str(tc['tool']))
 
         var approval_resp = {
           'ok':true,
@@ -581,6 +624,7 @@ class TasmoClawDriver : Driver
       end
 
       var tr=self.tools.run(tc['tool'],tc['args'])
+      tasmoclaw_util.debug('chat tool finished tool=' + str(tc['tool']) + ' ok=' + str(tr.find('ok')) + ' error=' + str(tr.find('error')))
       if self.tools.requires_approval_for(tc['tool'], tc['args'])
         action_tool_seen = true
       end
@@ -604,6 +648,7 @@ class TasmoClawDriver : Driver
     var final_fallback = self.direct_tool_for_user(user)
     if final_fallback != nil
       if self.tools.requires_approval_for(final_fallback['tool'], final_fallback['args']) && self.cfg['auto_approve_tools'] != true
+        tasmoclaw_util.debug('chat retry-limit fallback approval required tool=' + str(final_fallback['tool']))
         var final_now = tasmota.rtc().find('local')
         if final_now == nil
           final_now = tasmota.rtc().find('utc')
@@ -633,6 +678,7 @@ class TasmoClawDriver : Driver
       var final_result = self.tools.run(final_fallback['tool'], final_fallback['args'])
       var final_trace = self.format_tool_trace(final_fallback['tool'], final_result)
       var final_content = self.format_tool_answer(user, final_fallback['tool'], final_result)
+      tasmoclaw_util.debug('chat retry-limit fallback tool=' + str(final_fallback['tool']) + ' ok=' + str(final_result.find('ok')))
       self.history.push({'role':'tool','content':final_trace})
       self.history.push({'role':'assistant','content':final_content})
       self.trim_history()
@@ -641,6 +687,7 @@ class TasmoClawDriver : Driver
       return
     end
 
+    tasmoclaw_util.debug('chat failed: max_tool_iterations reached loops=' + str(loops))
     self.api_json({'ok':false,'error':'max_tool_iterations reached'})
   end
 
@@ -956,26 +1003,41 @@ class TasmoClawDriver : Driver
   end
 
   def api_clear()
+    tasmoclaw_util.debug('api clear history size=' + str(size(self.history)))
     self.history=[]
     self.store.save_history(self.history)
     self.api_json({'ok':true})
   end
 
   def api_reject()
+    tasmoclaw_util.debug('api reject pending=' + str(self.pending != nil))
     self.pending=nil
     self.store.save_pending(nil)
     self.api_json({'ok':true})
   end
 
   def base_messages()
+    var mode = self.cfg.find('prompt_mode')
+    var tool_lines = mode == 'full' ? self.tools.tool_lines() : self.tools.tool_lines_compact()
+    var system_prompt = mode == 'full' ? tasmoclaw_prompt.build(tool_lines,self.cfg['system_extra']) : tasmoclaw_prompt.build_compact(tool_lines,self.cfg['system_extra'])
+    var budget = self.cfg.find('context_byte_limit')
+    if budget == nil || budget < 1200
+      budget = 5200
+    end
+
     var msgs=[
       {
         'role':'system',
-        'content':tasmoclaw_prompt.build(self.tools.tool_lines(),self.cfg['system_extra'])
+        'content':system_prompt
       }
     ]
 
-    for m:self.history
+    var selected = []
+    var used = size(system_prompt)
+    var i = size(self.history) - 1
+
+    while i >= 0
+      var m=self.history[i]
       var role=m.find('role')
       var content=m.find('content')
 
@@ -986,11 +1048,27 @@ class TasmoClawDriver : Driver
         end
 
         if content != nil && (tool_marker == nil || tool_marker < 0)
-          msgs.push({'role':role,'content':content})
+          var clen = size(content)
+          if used + clen <= budget || size(selected) == 0
+            selected.push({'role':role,'content':content})
+            used += clen
+          else
+            tasmoclaw_util.debug('base_messages context budget reached used=' + str(used) + ' budget=' + str(budget))
+            break
+          end
         end
       end
+
+      i -= 1
     end
 
+    var j = size(selected) - 1
+    while j >= 0
+      msgs.push(selected[j])
+      j -= 1
+    end
+
+    tasmoclaw_util.debug('base_messages mode=' + str(mode) + ' prompt_bytes=' + str(size(system_prompt)) + ' messages=' + str(size(msgs)) + ' used_bytes=' + str(used) + ' budget=' + str(budget))
     return msgs
   end
 
@@ -1896,6 +1974,7 @@ class TasmoClawDriver : Driver
 
     var open_brace=string.find(s,'{')
     if open_brace == nil || open_brace < 0
+      tasmoclaw_util.debug('tool block parse failed: no JSON object')
       return nil
     end
     s=s[open_brace..size(s)-1]
@@ -1903,22 +1982,26 @@ class TasmoClawDriver : Driver
     try
       return json.load(s)
     except .. as e,m
+      tasmoclaw_util.debug('tool block parse JSON failure: ' + str(e) + ' ' + str(m) + ' text=' + tasmoclaw_util.preview(s, 160))
       return nil
     end
   end
 
   def api_approve()
     if self.pending==nil
+      tasmoclaw_util.debug('api approve failed: no pending action')
       self.api_json({'ok':false,'error':'no pending action'})
       return
     end
 
     var p=self.pending
+    tasmoclaw_util.debug('api approve start tool=' + str(p.find('tool')))
 
     self.pending=nil
     self.store.save_pending(nil)
 
     var r=self.tools.run(p['tool'],p['args'])
+    tasmoclaw_util.debug('api approve tool result tool=' + str(p.find('tool')) + ' ok=' + str(r.find('ok')) + ' error=' + str(r.find('error')))
 
     self.history.push({
       'role':'assistant',
@@ -1932,6 +2015,7 @@ class TasmoClawDriver : Driver
   end
 
   def api_test()
+    tasmoclaw_util.debug('api test start')
     var cfg2 = {}
     for k:self.cfg.keys()
       cfg2[k] = self.cfg[k]
@@ -1945,6 +2029,7 @@ class TasmoClawDriver : Driver
     ]
 
     var r=self.llm.call_chat(cfg2,msgs)
+    tasmoclaw_util.debug('api test result ok=' + str(r.find('ok')) + ' transport=' + str(r.find('transport')) + ' status=' + str(r.find('status')) + ' error=' + str(r.find('error')))
 
     if r['ok']
       self.api_json({'ok':true,'content':r['content'],'transport':r.find('transport'),'status':r.find('status')})

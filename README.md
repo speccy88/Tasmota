@@ -48,9 +48,11 @@ http://<device-ip>/tasmoclaw/config
 
 TasmoClaw works by giving the model a compact registry of device tools. For requests that depend on live device state, filesystem contents, rules, sensors, relays, or Berry files, the model must call a tool first. TasmoClaw executes one tool at a time, feeds the result back to the model, and only then asks for a human-friendly answer. Write operations and unsafe Tasmota commands create a pending approval unless auto-approval is enabled in the config page.
 
+The portable HTTPS path is Tasmota Berry `webclient()`/BearSSL. TasmoClaw defaults to compact prompt mode with a bounded context byte limit so regular ESP32 boards without PSRAM are less likely to hit webclient `HTTP -8` (“too little RAM”) during DeepSeek POST requests. The optional native HTTPS helper remains separate and should only be used for custom firmware builds that need it.
+
 Important pieces:
 
-- `tools/tasmoclaw_tapp/build_tapp.py` generates the uploadable `.tapp`; generated `dist/` artifacts are ignored and should not be committed.
+- `tools/tasmoclaw_tapp/build_tapp.py` generates the uploadable `.tapp`; this side-project branch keeps the current `dist/tasmoclaw.tapp` available for download.
 - `tasmota/tasmota_xdrv_driver/xdrv_99_tasmoclaw_https.ino` exposes `idf_https_post()`, `idf_https_get()`, `idf_https_download()`, and native SD/UFS helpers to Berry when `USE_TASMOCLAW_HTTPS` is enabled.
 - The Tasmota file manager now has a FlashFS/SDCard selector, plus Copy/Move actions for regular files when both filesystems are mounted. Native/TasmoClaw filesystem paths can use `sd:/...` or `flash:/...` to avoid ambiguity.
 - The default DeepSeek endpoint is `https://api.deepseek.com/chat/completions`, with `deepseek-v4-flash` as the default model and `deepseek-v4-pro` as the heavier option.

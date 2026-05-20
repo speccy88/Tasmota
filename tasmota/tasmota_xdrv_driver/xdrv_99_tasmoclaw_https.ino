@@ -153,6 +153,14 @@ static String TasmoClawJsonEscape(const char *s) {
 }
 
 static String TasmoClawHttpsError(const char *stage, const char *error, esp_err_t err = ESP_OK, int tls_code = 0, int tls_flags = 0) {
+  AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: HTTPS error stage=%s error=%s esp_err=%d tls_code=%d tls_flags=%d heap=%u spiram=%u"),
+         stage ? stage : "unknown",
+         error ? error : "error",
+         (int32_t)err,
+         (int32_t)tls_code,
+         (int32_t)tls_flags,
+         (uint32_t)esp_get_free_heap_size(),
+         (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
   String out;
   out.reserve(340);
   out += F("{\"ok\":false,\"status\":0,\"error\":\"");
@@ -198,6 +206,13 @@ static String TasmoClawHttpsError(const char *stage, const char *error, esp_err_
 }
 
 static String TasmoClawHttpsSuccess(int status, const char *body, size_t body_len, bool truncated, const char *backend) {
+  AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: HTTPS success backend=%s status=%d bytes=%u truncated=%d heap=%u spiram=%u"),
+         backend ? backend : "unknown",
+         status,
+         (uint32_t)body_len,
+         truncated ? 1 : 0,
+         (uint32_t)esp_get_free_heap_size(),
+         (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
   const String escaped_body = TasmoClawJsonEscape(body, body_len);
   String out;
   out.reserve(escaped_body.length() + 160);
@@ -882,6 +897,7 @@ extern "C" int tasmoclaw_idf_https_post(bvm *vm);
 extern "C" int tasmoclaw_idf_https_post(bvm *vm) {
   const int32_t argc = be_top(vm);
   if (argc < 3 || !be_isstring(vm, 1) || !be_isstring(vm, 2) || !be_isstring(vm, 3)) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: idf_https_post bad args argc=%d"), argc);
     be_pushstring(vm, "{\"ok\":false,\"status\":0,\"error\":\"idf_https_post(url, headers_json, body) expects three strings\",\"esp_err\":0,\"stage\":\"args\",\"body\":\"\"}");
     be_return(vm);
   }
@@ -890,6 +906,7 @@ extern "C" int tasmoclaw_idf_https_post(bvm *vm) {
   const char *headers_json = be_tostring(vm, 2);
   const char *body = be_tostring(vm, 3);
   const size_t body_len = body ? strlen(body) : 0;
+  AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: idf_https_post start https=%d body_bytes=%u"), (url && strncmp(url, "https://", 8) == 0) ? 1 : 0, (uint32_t)body_len);
 
   if (url && strncmp(url, "https://", 8) == 0) {
     String out = TasmoClawMbedTlsPost(url, headers_json, body, body_len);
@@ -965,12 +982,14 @@ extern "C" int tasmoclaw_idf_https_get(bvm *vm);
 extern "C" int tasmoclaw_idf_https_get(bvm *vm) {
   const int32_t argc = be_top(vm);
   if (argc < 2 || !be_isstring(vm, 1) || !be_isstring(vm, 2)) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: idf_https_get bad args argc=%d"), argc);
     be_pushstring(vm, "{\"ok\":false,\"status\":0,\"error\":\"idf_https_get(url, headers_json) expects two strings\",\"esp_err\":0,\"stage\":\"args\",\"body\":\"\"}");
     be_return(vm);
   }
 
   const char *url = be_tostring(vm, 1);
   const char *headers_json = be_tostring(vm, 2);
+  AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: idf_https_get start https=%d"), (url && strncmp(url, "https://", 8) == 0) ? 1 : 0);
 
   if (url && strncmp(url, "https://", 8) == 0) {
     String out = TasmoClawMbedTlsGet(url, headers_json);
@@ -1091,6 +1110,10 @@ static bool TasmoClawUfsResolve(const char *path, FS **target_fs, String &target
 }
 
 static String TasmoClawUfsError(const char *stage, const char *error, const char *path = nullptr) {
+  AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: UFS error stage=%s error=%s path=%s"),
+         stage ? stage : "unknown",
+         error ? error : "UFS error",
+         path ? path : "");
   String out;
   out.reserve(220);
   out += F("{\"ok\":false,\"error\":\"");
@@ -1108,6 +1131,12 @@ static String TasmoClawUfsError(const char *stage, const char *error, const char
 }
 
 static String TasmoClawDownloadSuccess(int status, const char *path, size_t bytes, bool truncated, const char *backend) {
+  AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: HTTPS download backend=%s status=%d bytes=%u truncated=%d path=%s"),
+         backend ? backend : "unknown",
+         status,
+         (uint32_t)bytes,
+         truncated ? 1 : 0,
+         path ? path : "");
   String out;
   out.reserve(180);
   out += F("{\"ok\":");
@@ -1539,12 +1568,14 @@ extern "C" int tasmoclaw_idf_https_download(bvm *vm) {
 #ifdef USE_UFILESYS
   const int32_t argc = be_top(vm);
   if (argc < 3 || !be_isstring(vm, 1) || !be_isstring(vm, 2) || !be_isstring(vm, 3)) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: idf_https_download bad args argc=%d"), argc);
     be_pushstring(vm, "{\"ok\":false,\"status\":0,\"error\":\"idf_https_download(url, headers_json, path) expects three strings\",\"stage\":\"args\"}");
     be_return(vm);
   }
   const char *url = be_tostring(vm, 1);
   const char *headers_json = be_tostring(vm, 2);
   const char *path = be_tostring(vm, 3);
+  AddLog(LOG_LEVEL_DEBUG, PSTR("TCL: idf_https_download start https=%d path=%s"), (url && strncmp(url, "https://", 8) == 0) ? 1 : 0, path ? path : "");
   if (url && strncmp(url, "https://", 8) == 0) {
     String out = TasmoClawMbedTlsDownload(url, headers_json, path);
     be_pushstring(vm, out.c_str());

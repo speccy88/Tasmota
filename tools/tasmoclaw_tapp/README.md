@@ -23,7 +23,7 @@ python3 build_tapp.py
 
 This creates `dist/tasmoclaw.tapp` using ZIP_STORED/uncompressed entries for Tasmota.
 
-Do not commit `dist/tasmoclaw.tapp`. The generated `dist/`, `*.tapp`, `*.zip`, and `*.gz` artifacts are ignored by git. If you want to distribute a ready-to-upload `.tapp`, attach it to a GitHub Release, not the PR.
+Upstream-style PRs should normally avoid generated `.tapp` artifacts and attach ready-to-upload builds to GitHub Releases. This side-project branch intentionally keeps the current `dist/tasmoclaw.tapp` tracked so it can be downloaded directly from GitHub while the board support work is in progress.
 
 ## Install
 
@@ -48,7 +48,9 @@ Open `/tasmoclaw/config` and set:
   - `webclient / BearSSL`: default and portable for normal Tasmota builds.
   - `auto`: try BearSSL first, then the optional native helper only if no HTTP response is received.
   - `native ESP-IDF bridge`: force the optional mbedTLS helper.
-- Temperature, max tokens, thinking mode, reasoning effort, tool iteration limit, history limit, and optional extra system instructions.
+- Temperature, max tokens, thinking mode, reasoning effort, tool iteration limit, history limit, prompt mode, context byte limit, and optional extra system instructions.
+
+TasmoClaw defaults to `prompt mode: compact` and a bounded context byte limit so normal ESP32 builds can use the portable BearSSL `webclient()` path. Use `prompt mode: full` only on boards with enough free heap/PSRAM, or when debugging tool-selection behavior.
 
 The config page loads `/tasmoclaw/api/config`, saves with `POST /tasmoclaw/api/config`, and tests the current API settings with `POST /tasmoclaw/api/test`. The API key is masked as `********` when read back. Saving an empty key or `********` preserves the existing key; entering a new non-empty value replaces it.
 
@@ -365,6 +367,8 @@ Use prompts such as `Create memory.md on the SD card with the text ...` and `Rea
 - HTTP 401/403: check the API key.
 - HTTP 404: check the API URL.
 - HTTPS or request failures: run `TasmoClawHttpsTest`. If BearSSL returns HTTP 401 from DeepSeek or HTTP 200 from TRMNL, the portable transport works. If BearSSL returns a negative code but native succeeds, use `auto`/`native` only for that custom build.
+- Detailed debug logs: run `WebLog 4` for web console logs or `SerialLog 4` for serial logs, then reproduce the issue. TasmoClaw emits `TCL:` debug lines for chat loop steps, tool selection, storage fallbacks, webclient/native HTTPS start/result/failure, HTTP status, body byte counts, retry attempts, and native TLS stages. API keys and Authorization headers are not logged.
+- `HTTP -8 from Tasmota webclient before receiving a server response (too little RAM)`: BearSSL can usually still work; the request is too large for available heap. Keep `prompt mode` on `compact`, lower `context byte limit` to around `3500`, reduce `history limit`, clear chat history, and retry. `TCL: llm call start ... payload_bytes=...` in `WebLog 4` shows the request size.
 - `malloc failed`: check `Status 0`; `PsrMax` should be `8192` on the Waveshare board and `PsrFree` should be non-zero.
 - SD not visible: check `UfsType`, `Ufs`, and the SDIO template pins. `UfsType` should include `1`.
 - No SHTC3 sensor: check `I2CScan` for `0x70` and confirm `USE_SHT3X` is enabled.

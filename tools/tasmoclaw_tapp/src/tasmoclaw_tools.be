@@ -72,6 +72,25 @@ class TasmoClawTools
     return out
   end
 
+  def tool_lines_compact()
+    var out = ''
+    out += '- device_read: read sensors, ADC, power, SD, heap, Wi-Fi\n'
+    out += '- sensor_read: read temperature, humidity, ADC/analog, I2C scan\n'
+    out += '- power_read, power_control: read/on/off/toggle Power/Power1/Power2 with slot/action\n'
+    out += '- rule_control: read/enable/disable/clear/set Rule1/Rule2/Rule3/Rules\n'
+    out += '- file_list, file_read, file_write: sd:/path or flash:/path files\n'
+    out += '- sd_markdown_list/read/write: SD memory markdown files\n'
+    out += '- berry_program_read/write/run/explain/check: Berry source files\n'
+    out += '- berry_skill_template/create/run/explain: reusable Berry commands/skills\n'
+    out += '- audio_rtttl_play: play generated full RTTTL via args.rtttl, not only a title\n'
+    out += '- audio_file_play, audio_say, audio_control: I2S play/loop/say/stop/pause/gain/beep/codec/time/record\n'
+    out += '- display_control: DisplayText\n'
+    out += '- light_control, mqtt_control, telemetry_control, network_control, system_control, timer_control, filesystem_control\n'
+    out += '- command_catalog_search, command_build, command_run, command_sequence_run: fallback command support\n'
+    out += '- tasmota_status, tasmota_cmd_read, tasmota_cmd, berry_load, berry_compile, rule_apply, rule_clear, display_message, create_demo_berry\n'
+    return out
+  end
+
   def requires_approval(name)
     if self.tool_defs.find(name) != nil
       return self.tool_defs[name]['approval']
@@ -155,7 +174,45 @@ class TasmoClawTools
     return c
   end
 
+  def arg_key_summary(args)
+    if args == nil
+      return ''
+    end
+
+    var out = ''
+    try
+      for k:args.keys()
+        if out != ''
+          out += ','
+        end
+        out += str(k)
+      end
+    except .. as e,m
+    end
+    return out
+  end
+
   def run(name, args)
+    tasmoclaw_util.debug('tool run start name=' + str(name) + ' arg_keys=' + self.arg_key_summary(args))
+    var r = nil
+    try
+      r = self.run_inner(name, args)
+    except .. as e,m
+      r = {'ok':false,'error':'tool exception: '+str(m),'exception':str(e)}
+      tasmoclaw_util.debug('tool run exception name=' + str(name) + ' exception=' + str(e) + ' message=' + str(m))
+    end
+
+    if r == nil
+      r = {'ok':false,'error':'tool returned nil'}
+    elif type(r) != 'map'
+      r = {'ok':true,'result':r}
+    end
+
+    tasmoclaw_util.debug('tool run done name=' + str(name) + ' ok=' + str(r.find('ok')) + ' error=' + str(r.find('error')) + ' command=' + str(r.find('command')))
+    return r
+  end
+
+  def run_inner(name, args)
     if args == nil
       args = {}
     end
