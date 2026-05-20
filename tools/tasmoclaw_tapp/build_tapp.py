@@ -8,7 +8,7 @@ dist = root / 'dist'
 dist.mkdir(exist_ok=True)
 out = dist / 'tasmoclaw.tapp'
 required = [
- 'autoexec.be','tasmoclaw.be','tasmoclaw_ui.be','tasmoclaw_tools.be','tasmoclaw_llm.be','tasmoclaw_store.be','tasmoclaw_util.be','tasmoclaw_prompt.be'
+ 'autoexec.be','tasmoclaw.be','tasmoclaw_ui.be','tasmoclaw_tools.be','tasmoclaw_llm.be','tasmoclaw_store.be','tasmoclaw_util.be','tasmoclaw_prompt.be','tasmoclaw_commands.be'
 ]
 for f in required:
     if not (src / f).exists():

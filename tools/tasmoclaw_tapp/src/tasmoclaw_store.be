@@ -22,6 +22,7 @@ class TasmoClawStore
       'model':'deepseek-v4-flash',
       'model_flash':'deepseek-v4-flash',
       'model_pro':'deepseek-v4-pro',
+      'https_transport':'webclient',
       'api_key':'',
       'temperature':0.2,
       'max_tokens':900,

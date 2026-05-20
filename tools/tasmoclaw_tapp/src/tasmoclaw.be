@@ -7,6 +7,7 @@ import tasmoclaw_llm
 import tasmoclaw_ui
 import tasmoclaw_prompt
 import tasmoclaw_util
+import tasmoclaw_commands
 
 var _driver = nil
 
@@ -56,29 +57,15 @@ class TasmoClawDriver : Driver
   end
 
   def https_test_obj()
-    var out = {'ok':true,'native_available':false}
-    var headers = tasmoclaw_util.json_encode({
-      'Content-Type':'application/json',
-      'Accept':'application/json',
-      'Connection':'close',
-      'User-Agent':'TasmoClaw/0.1'
-    })
+    var out = {
+      'ok':true,
+      'configured_transport':self.cfg.find('https_transport') == nil ? 'webclient' : self.cfg['https_transport']
+    }
 
-    try
-      var raw = idf_https_post('https://httpbin.org/post', headers, '{"test":true}')
-      var o = json.load(raw)
-      out['native_available'] = true
-      out['transport'] = 'esp_http_client'
-      out['status'] = o.find('status')
-      out['error'] = o.find('error')
-      out['stage'] = o.find('stage')
-      out['esp_err'] = o.find('esp_err')
-      out['body'] = tasmoclaw_util.preview(o.find('body'), 220)
-    except .. as e,m
-      out['native_available'] = false
-      out['transport'] = 'none'
-      out['error'] = 'idf_https_post unavailable: ' + str(m)
-    end
+    out['bearssl_deepseek'] = self.llm.probe_webclient('https://api.deepseek.com/chat/completions')
+    out['bearssl_trmnl'] = self.llm.probe_webclient('https://trmnl.com/api/display')
+    out['native_deepseek'] = self.llm.probe_native_get('https://api.deepseek.com/chat/completions')
+    out['native_trmnl'] = self.llm.probe_native_get('https://trmnl.com/api/display')
 
     if self.cfg.find('api_key') != nil && self.cfg['api_key'] != ''
       var cfg2 = {}
@@ -98,6 +85,7 @@ class TasmoClawDriver : Driver
         'error':r.find('error'),
         'stage':r.find('stage'),
         'esp_err':r.find('esp_err'),
+        'webclient_error':r.find('webclient_error'),
         'content':tasmoclaw_util.preview(r.find('content'), 120),
         'body':tasmoclaw_util.preview(r.find('body'), 220)
       }
@@ -159,6 +147,7 @@ class TasmoClawDriver : Driver
     webserver.content_send('<h2>TasmoClaw Config</h2>')
     webserver.content_send('<label>API URL</label><input id="api_url">')
     webserver.content_send('<label>Model</label><select id="model"><option>deepseek-v4-flash</option><option>deepseek-v4-pro</option></select>')
+    webserver.content_send('<label>HTTPS transport</label><select id="https_transport"><option value="webclient">webclient / BearSSL</option><option value="auto">auto: BearSSL then native fallback</option><option value="native">native ESP-IDF bridge</option></select>')
     webserver.content_send('<label>API Key</label><input id="api_key" type="password">')
     webserver.content_send('<label>Temperature</label><input id="temperature" type="number" step="0.1" min="0" max="2">')
     webserver.content_send('<label>Max tokens</label><input id="max_tokens" type="number" min="1">')
@@ -172,7 +161,7 @@ class TasmoClawDriver : Driver
     webserver.content_send('<div id="msg" class="msg"></div>')
     webserver.content_send('</div>')
 
-    webserver.content_send('<script>const ids=["api_url","model","api_key","temperature","max_tokens","thinking","reasoning_effort","max_tool_iterations","history_limit","system_extra"];const el=id=>document.getElementById(id);const note=t=>el("msg").textContent=t;function setCfg(c){ids.forEach(id=>{if(c[id]!=null)el(id).value=c[id];});el("auto_approve_tools").checked=!!c.auto_approve_tools;}function getCfg(){fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>setCfg(x.config||{})).catch(e=>note(String(e)));}function body(){let c={};ids.forEach(id=>c[id]=el(id).value);c.temperature=parseFloat(c.temperature);c.max_tokens=parseInt(c.max_tokens);c.max_tool_iterations=parseInt(c.max_tool_iterations);c.history_limit=parseInt(c.history_limit);c.auto_approve_tools=el("auto_approve_tools").checked;return c;}el("save").onclick=()=>{note("Saving...");fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>{note(x.ok?"Saved":(x.error||"Save failed"));if(x.config)setCfg(x.config);}).catch(e=>note(String(e)));};el("test").onclick=()=>{note("Testing...");fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>note(x.ok?x.content:(x.error||"Test failed"))).catch(e=>note(String(e)));};getCfg();</script>')
+    webserver.content_send('<script>const ids=["api_url","model","https_transport","api_key","temperature","max_tokens","thinking","reasoning_effort","max_tool_iterations","history_limit","system_extra"];const el=id=>document.getElementById(id);const note=t=>el("msg").textContent=t;function setCfg(c){ids.forEach(id=>{if(c[id]!=null)el(id).value=c[id];});el("auto_approve_tools").checked=!!c.auto_approve_tools;}function getCfg(){fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>setCfg(x.config||{})).catch(e=>note(String(e)));}function body(){let c={};ids.forEach(id=>c[id]=el(id).value);c.temperature=parseFloat(c.temperature);c.max_tokens=parseInt(c.max_tokens);c.max_tool_iterations=parseInt(c.max_tool_iterations);c.history_limit=parseInt(c.history_limit);c.auto_approve_tools=el("auto_approve_tools").checked;return c;}function testText(x){if(x.ok)return (x.content||"OK")+" via "+(x.transport||"?")+" HTTP "+(x.status||"?");let p=[x.error||"Test failed"];if(x.transport)p.push("transport "+x.transport);if(x.status!=null)p.push("status "+x.status);if(x.stage)p.push("stage "+x.stage);if(x.hint)p.push(x.hint);if(x.fallback_hint)p.push(x.fallback_hint);if(x.webclient_error)p.push("webclient: "+x.webclient_error);return p.join(" | ");}el("save").onclick=()=>{note("Saving...");fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>{note(x.ok?"Saved":(x.error||"Save failed"));if(x.config)setCfg(x.config);}).catch(e=>note(String(e)));};el("test").onclick=()=>{note("Testing...");fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>note(testText(x))).catch(e=>note(String(e)));};getCfg();</script>')
 
     webserver.content_stop()
   end
@@ -194,6 +183,7 @@ class TasmoClawDriver : Driver
       'ok':true,
       'model':self.cfg['model'],
       'api_url':self.cfg['api_url'],
+      'https_transport':self.cfg.find('https_transport') == nil ? 'webclient' : self.cfg['https_transport'],
       'heap':tasmota.memory(),
       'wifi':tasmota.wifi(),
       'pending':self.pending!=nil,
@@ -229,6 +219,10 @@ class TasmoClawDriver : Driver
 
     if cfg['model'] != 'deepseek-v4-pro' && cfg['model'] != 'deepseek-v4-flash'
       cfg['model'] = defaults['model']
+    end
+
+    if cfg['https_transport'] != 'native' && cfg['https_transport'] != 'auto'
+      cfg['https_transport'] = 'webclient'
     end
 
     if cfg['temperature'] == nil
@@ -332,7 +326,7 @@ class TasmoClawDriver : Driver
     if direct != nil
       self.history.push({'role':'user','content':user})
 
-      if self.tools.requires_approval(direct['tool']) && self.cfg['auto_approve_tools'] != true
+      if self.tools.requires_approval_for(direct['tool'], direct['args']) && self.cfg['auto_approve_tools'] != true
         var direct_now = tasmota.rtc().find('local')
         if direct_now == nil
           direct_now = tasmota.rtc().find('utc')
@@ -428,6 +422,15 @@ class TasmoClawDriver : Driver
       var tc=self.parse_tool_block(c)
 
       if tc==nil
+        if c != nil && string.find(c, '<<<TASMOCLAW_TOOL>>>') != nil && string.find(c, '<<<TASMOCLAW_TOOL>>>') >= 0 && _i < loops - 1
+          msgs.push({'role':'assistant','content':c})
+          msgs.push({
+            'role':'user',
+            'content':'Your TasmoClaw tool block was incomplete or invalid JSON. Resend exactly one complete tool block with valid JSON and the closing <<<END_TASMOCLAW_TOOL>>> marker. For audio_rtttl_play, keep the RTTTL short but complete.'
+          })
+          continue
+        end
+
         if last_tool_result == nil && self.request_needs_tool(user) && _i < loops - 1
           msgs.push({
             'role':'user',
@@ -474,7 +477,7 @@ class TasmoClawDriver : Driver
         if c == nil || c == ''
           var fallback = self.direct_tool_for_user(user)
           if fallback != nil
-            if self.tools.requires_approval(fallback['tool']) && self.cfg['auto_approve_tools'] != true
+            if self.tools.requires_approval_for(fallback['tool'], fallback['args']) && self.cfg['auto_approve_tools'] != true
               var fallback_now = tasmota.rtc().find('local')
               if fallback_now == nil
                 fallback_now = tasmota.rtc().find('utc')
@@ -532,7 +535,7 @@ class TasmoClawDriver : Driver
         continue
       end
 
-      if self.tools.requires_approval(tc['tool']) && self.cfg['auto_approve_tools'] != true
+      if self.tools.requires_approval_for(tc['tool'], tc['args']) && self.cfg['auto_approve_tools'] != true
         var now = tasmota.rtc().find('local')
         if now == nil
           now = tasmota.rtc().find('utc')
@@ -567,7 +570,7 @@ class TasmoClawDriver : Driver
       end
 
       var tr=self.tools.run(tc['tool'],tc['args'])
-      if self.tools.requires_approval(tc['tool'])
+      if self.tools.requires_approval_for(tc['tool'], tc['args'])
         action_tool_seen = true
       end
       var trace = self.format_tool_trace(tc['tool'], tr)
@@ -583,7 +586,7 @@ class TasmoClawDriver : Driver
       msgs.push({'role':'assistant','content':c})
       msgs.push({
         'role':'user',
-        'content':'TasmoClaw tool result for '+tc['tool']+':\n'+tasmoclaw_util.json_encode(tr)+'\nContinue and give the user the final answer. Summarize the relevant fields from the result instead of dumping raw JSON. Include ADC/analog values, sensor readings, power states, filenames, paths, byte counts, and errors when present.'
+        'content':'Original user request:\n'+user+'\n\nTasmoClaw tool result for '+tc['tool']+':\n'+tasmoclaw_util.json_encode(tr)+'\nIf the original request still has uncompleted steps, call the next required TasmoClaw tool now. If all steps are complete, give the user the final answer. Summarize the relevant fields from the result instead of dumping raw JSON. Include ADC/analog values, sensor readings, power states, filenames, paths, byte counts, commands run, and errors when present.'
       })
     end
 
@@ -666,8 +669,28 @@ class TasmoClawDriver : Driver
       return out
     end
 
+    var cmd = result.find('command')
+    if cmd != nil
+      out += '\nCommand: ' + str(cmd)
+      var safety = result.find('safety')
+      if safety != nil
+        out += '\nSafety: ' + str(safety)
+      end
+    end
+
     var r = result.find('result')
-    if tool == 'sensor_read'
+    if tool == 'command_build'
+      out += '\nBuilt: ' + str(result.find('command'))
+      out += '\nSafety: ' + str(result.find('safety'))
+      out += '\nReason: ' + str(result.find('reason'))
+    elif tool == 'command_catalog_search'
+      out += '\nResult: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result), 700)
+    elif tool == 'command_run' || tool == 'command_sequence_run' || tool == 'audio_rtttl_play' || tool == 'audio_file_play' || tool == 'audio_say' || tool == 'audio_control' || tool == 'display_control' || tool == 'power_control' || tool == 'rule_control' || tool == 'light_control' || tool == 'mqtt_control' || tool == 'telemetry_control' || tool == 'network_control' || tool == 'system_control' || tool == 'timer_control' || tool == 'filesystem_control'
+      out += '\nResult: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(r), 700)
+    elif tool == 'berry_skill_template'
+      out += '\nCommand: ' + str(result.find('command'))
+      out += '\nResult: ' + tasmoclaw_util.preview(str(result.find('content')), 700)
+    elif tool == 'sensor_read'
       var s8 = self.map_find(r, 'status8')
       var sns = self.map_find(s8, 'StatusSNS')
       var analog = self.analog_summary(sns)
@@ -818,6 +841,56 @@ class TasmoClawDriver : Driver
         return 'SD card contents:\n' + sd_entries
       end
       return 'Storage is available. SD mounted: ' + str(self.map_find(r, 'sd_mounted')) + '. UFS type: ' + str(self.map_find(r, 'type')) + '.'
+    elif tool == 'command_build'
+      return 'I built this Tasmota command: ' + str(result.find('command')) + '. Safety: ' + str(result.find('safety')) + '.'
+    elif tool == 'command_catalog_search'
+      return 'I found matching command families:\n' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result.find('families')), 700)
+    elif tool == 'command_run'
+      return 'I ran ' + str(result.find('command')) + '. Result: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(r), 500)
+    elif tool == 'command_sequence_run'
+      var seq = result.find('results')
+      var out = 'I ran the command sequence.'
+      if seq != nil
+        out = 'Command sequence result:'
+        for step:seq
+          out += '\n- ' + str(step.find('command')) + ': '
+          if step.find('ok') == true
+            out += 'ok'
+          else
+            out += 'failed: ' + str(step.find('error'))
+          end
+        end
+      end
+      return out
+    elif tool == 'audio_rtttl_play'
+      return 'I started the RTTTL tune with ' + str(result.find('command')) + '.'
+    elif tool == 'audio_file_play'
+      return 'I ran audio playback command ' + str(result.find('command')) + '.'
+    elif tool == 'audio_say'
+      return 'I sent the speech command: ' + str(result.find('command')) + '.'
+    elif tool == 'audio_control'
+      return 'I ran audio command ' + str(result.find('command')) + '.'
+    elif tool == 'display_control'
+      return 'I sent the display command: ' + str(result.find('command')) + '.'
+    elif tool == 'power_control'
+      return 'I ran power command ' + str(result.find('command')) + '. Result: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(r), 500)
+    elif tool == 'rule_control'
+      return 'I ran the rule command. Result: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result), 700)
+    elif tool == 'light_control' || tool == 'mqtt_control' || tool == 'telemetry_control' || tool == 'network_control' || tool == 'system_control' || tool == 'timer_control' || tool == 'filesystem_control'
+      return 'I ran ' + str(result.find('command')) + '. Result: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(r), 500)
+    elif tool == 'berry_skill_template'
+      return 'I prepared a Berry skill template for command ' + str(result.find('command')) + '.'
+    elif tool == 'berry_skill_create'
+      var msg = 'I wrote the Berry skill to ' + str(result.find('path')) + '. It registers command ' + str(result.find('command')) + '.'
+      var lr = result.find('load')
+      if lr != nil
+        msg += ' Load result: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(lr), 300)
+      end
+      return msg
+    elif tool == 'berry_skill_run'
+      return 'I loaded the Berry skill. Result: ' + str(result.find('result')) + '.'
+    elif tool == 'berry_skill_explain'
+      return 'I read the Berry skill source:\n' + str(result.find('result'))
     elif tool == 'tasmota_cmd_read'
       var rules = self.rules_summary(result)
       if rules != ''
@@ -874,7 +947,7 @@ class TasmoClawDriver : Driver
     end
 
     var lower = string.tolower(user)
-    for ext:['.txt','.md','.json','.be','.tapp']
+    for ext:['.txt','.md','.json','.be','.tapp','.mp3','.wav','.opus','.webm','.aac','.m4a']
       var ei = string.find(lower, ext)
       if ei != nil && ei >= 0
         var start = ei
@@ -895,10 +968,117 @@ class TasmoClawDriver : Driver
           stop += 1
         end
 
+        var sdp = string.find(lower, 'sd:')
+        var flp = string.find(lower, 'flash:')
+        if sdp != nil && sdp >= 0 && sdp < ei
+          start = sdp
+        elif flp != nil && flp >= 0 && flp < ei
+          start = flp
+        end
+
         return user[start..stop]
       end
     end
 
+    return nil
+  end
+
+  def first_number_from_text(user)
+    if user == nil
+      return nil
+    end
+
+    var digits = '0123456789'
+    var start = nil
+    var stop = nil
+    for i:range(0, size(user))
+      var ch = user[i..i]
+      var di = string.find(digits, ch)
+      if di != nil && di >= 0
+        if start == nil
+          start = i
+        end
+        stop = i
+      elif start != nil
+        break
+      end
+    end
+
+    if start == nil
+      return nil
+    end
+    return user[start..stop]
+  end
+
+  def text_after_marker(user, markers)
+    if user == nil
+      return ''
+    end
+
+    var u = string.tolower(user)
+    for marker:markers
+      var mi = string.find(u, marker)
+      if mi != nil && mi >= 0
+        var start = mi + size(marker)
+        if start < size(user)
+          return user[start..size(user)-1]
+        end
+      end
+    end
+
+    return ''
+  end
+
+  def first_token(text)
+    if text == nil || text == ''
+      return ''
+    end
+
+    var stop = size(text) - 1
+    for i:range(0, size(text))
+      var ch = text[i..i]
+      if ch == ' ' || ch == '\n' || ch == '\t' || ch == '"' || ch == '\'' || ch == '`' || ch == ',' || ch == ':' || ch == ';' || ch == '.'
+        stop = i - 1
+        break
+      end
+    end
+
+    if stop < 0
+      return ''
+    end
+    return text[0..stop]
+  end
+
+  def rtttl_preset_from_text(user)
+    if user == nil
+      return nil
+    end
+
+    var u = string.tolower(user)
+    for avoid:['not happy','not happy birthday','another','different']
+      var avoid_i = string.find(u, avoid)
+      if avoid_i != nil && avoid_i >= 0
+        return nil
+      end
+    end
+
+    if string.find(u, 'happy birthday') != nil && string.find(u, 'happy birthday') >= 0
+      return 'happy_birthday'
+    elif string.find(u, 'mario') != nil && string.find(u, 'mario') >= 0
+      return 'mario'
+    elif string.find(u, 'twinkle') != nil && string.find(u, 'twinkle') >= 0
+      return 'twinkle'
+    elif string.find(u, 'ode') != nil && string.find(u, 'ode') >= 0
+      return 'ode'
+    elif string.find(u, 'scale') != nil && string.find(u, 'scale') >= 0
+      return 'scale'
+    elif string.find(u, 'success') != nil && string.find(u, 'success') >= 0
+      return 'success'
+    elif string.find(u, 'error') != nil && string.find(u, 'error') >= 0
+      return 'error'
+    elif string.find(u, 'startup') != nil && string.find(u, 'startup') >= 0
+      return 'startup'
+    end
     return nil
   end
 
@@ -912,7 +1092,12 @@ class TasmoClawDriver : Driver
       'current','now','status','sensor','temperature','humidity','adc','analog','i2c',
       'power','relay','rule','sd','card','file','filesystem','ufs','berry','tasmota',
       'command','gpio','wifi','heap','memory','read','open','show','list','write',
-      'create','save','run','toggle','switch','turn on','turn off'
+      'create','save','run','toggle','switch','turn on','turn off','play','audio',
+      'sound','song','rtttl','music','say','speak','volume','gain','beep','stop',
+      'pause','resume','display','screen','message','record','light','dimmer',
+      'brightness','color','colour','mqtt','publish','topic','teleperiod','weblog',
+      'seriallog','event','backlog','skill','tool','timer','timers','pulsetime',
+      'ruletimer','filesystem_control','network','hostname','ntp','timezone'
     ]
       var ki = string.find(u, kw)
       if ki != nil && ki >= 0
@@ -945,7 +1130,7 @@ class TasmoClawDriver : Driver
       return false
     end
 
-    for ak:['toggle','switch','turn on','turn off','set ','write','create','save','run','apply','delete','remove','clear','enable','disable']
+    for ak:['toggle','switch','turn on','turn off','set ','write','create','save','run','apply','delete','remove','clear','enable','disable','play','say','speak','display','stop','pause','resume']
       var ai = string.find(u, ak)
       if ai != nil && ai >= 0
         return true
@@ -955,12 +1140,135 @@ class TasmoClawDriver : Driver
     return false
   end
 
+  def is_rtttl_text(tune)
+    if tune == nil
+      return false
+    end
+    var s = str(tune)
+    var colon = string.find(s, ':')
+    var comma = string.find(s, ',')
+    var defaults = string.find(s, 'd=')
+    return colon != nil && colon >= 0 && comma != nil && comma >= 0 && defaults != nil && defaults >= 0
+  end
+
+  def known_rtttl_name(name)
+    if name == nil
+      return false
+    end
+    var key = string.tolower(str(name))
+    key = string.replace(key, ' ', '_')
+    key = string.replace(key, '-', '_')
+    for item:['happy_birthday','happy','success','ok','error','startup','mario','scale','twinkle','ode']
+      if key == item
+        return true
+      end
+    end
+    return false
+  end
+
   def tool_choice_repair(user, tc)
     if user == nil || tc == nil
       return nil
     end
 
     var u = string.tolower(user)
+    var chosen_tool = tc.find('tool')
+    var chosen_args = tc.find('args')
+
+    if chosen_tool == 'audio_rtttl_play'
+      var has_valid_rtttl = false
+      var has_known_preset = false
+      var supplied_title = ''
+      if chosen_args != nil
+        var supplied_rtttl = chosen_args.find('rtttl')
+        if supplied_rtttl == nil
+          supplied_rtttl = chosen_args.find('tune')
+        end
+        if supplied_rtttl == nil
+          supplied_rtttl = chosen_args.find('body')
+        end
+        if supplied_rtttl != nil
+          supplied_title = str(supplied_rtttl)
+          has_valid_rtttl = self.is_rtttl_text(supplied_rtttl)
+          if !has_valid_rtttl && self.known_rtttl_name(supplied_rtttl)
+            has_known_preset = true
+          end
+        end
+
+        var supplied_preset = chosen_args.find('preset')
+        if supplied_preset == nil
+          supplied_preset = chosen_args.find('name')
+        end
+        if supplied_preset == nil
+          supplied_preset = chosen_args.find('song')
+        end
+        if supplied_preset != nil && self.known_rtttl_name(supplied_preset)
+          has_known_preset = true
+        end
+      end
+
+      if !has_valid_rtttl && !has_known_preset
+        return 'The audio_rtttl_play tool needs a complete RTTTL string in args.rtttl, not only a song title like "' + supplied_title + '". Compose a short valid RTTTL melody now and respond with exactly one complete TasmoClaw tool block, for example {"tool":"audio_rtttl_play","args":{"rtttl":"NewTune:d=8,o=5,b=140:c,e,g,c6,g,e,c,p"},"reason":"Play a generated RTTTL melody."}.'
+      end
+    end
+
+    if chosen_tool == 'berry_skill_template'
+      var wants_write_skill = false
+      for sw:['create','write','save','install','load','run','make','register']
+        var swi = string.find(u, sw)
+        if swi != nil && swi >= 0
+          wants_write_skill = true
+        end
+      end
+      if wants_write_skill
+        return 'The user asked to create or load a reusable Berry skill, not just preview a template. Call berry_skill_create now. Use the explicit skill name and command name from the original request, include content/code if the user supplied it, and set autoload:true if the user asked to load it.'
+      end
+    end
+
+    if chosen_tool == 'berry_skill_create'
+      var args2 = tc.find('args')
+      var skill_default = false
+      if args2 == nil
+        skill_default = true
+      else
+        var sn = args2.find('name')
+        var sc = args2.find('command')
+        if sn == nil || sn == '' || string.tolower(str(sn)) == 'tasmo_skill'
+          skill_default = true
+        end
+        if sc == nil || sc == '' || string.tolower(str(sc)) == 'tasmo_skill'
+          skill_default = true
+        end
+      end
+      if skill_default && (string.find(u, 'called') != nil || string.find(u, 'named') != nil || string.find(u, 'command') != nil)
+        return 'The Berry skill tool call used the default name. Resend berry_skill_create with the explicit skill name and command name from the original request. If the user asked to load it, include autoload:true.'
+      end
+
+      if args2 != nil
+        var asked_load = false
+        for lw:['load','run','execute']
+          var lwi = string.find(u, lw)
+          if lwi != nil && lwi >= 0
+            asked_load = true
+          end
+        end
+        if asked_load && args2.find('autoload') != true
+          return 'The user asked to create and load the Berry skill. Resend berry_skill_create with autoload:true.'
+        end
+
+        var provided_content = args2.find('content')
+        if provided_content == nil
+          provided_content = args2.find('code')
+        end
+        if provided_content != nil && provided_content != ''
+          var pcs = string.tolower(str(provided_content))
+          if string.find(pcs, 'def (') != nil || string.find(pcs, ' .. ') != nil
+            return 'The generated Berry code looks invalid for Tasmota Berry. Unless the user supplied exact source code, omit content/code and let berry_skill_create generate the safe default command template for the requested name and command.'
+          end
+        end
+      end
+    end
+
     var asks_rule = false
     var has_rule = string.find(u, 'rule')
     var has_rules = string.find(u, 'rules')
@@ -992,8 +1300,18 @@ class TasmoClawDriver : Driver
         end
 
         var cmd_l = cmd == nil ? '' : string.tolower(str(cmd))
-        if tool != 'tasmota_cmd_read' || cmd_l != 'rules'
-          return 'The user asked to read Tasmota rules. The correct tool is tasmota_cmd_read with args {"command":"Rules"}. Do not use device_read for rules. Respond with exactly that TasmoClaw tool block.'
+        var ok_rule_tool = false
+        if tool == 'tasmota_cmd_read' && cmd_l == 'rules'
+          ok_rule_tool = true
+        elif tool == 'rule_control'
+          var action = args == nil ? nil : args.find('action')
+          if action == nil || action == '' || string.tolower(str(action)) == 'read'
+            ok_rule_tool = true
+          end
+        end
+
+        if !ok_rule_tool
+          return 'The user asked to read Tasmota rules. Use rule_control with args {"action":"read","rule":"Rules"} or tasmota_cmd_read with args {"command":"Rules"}. Do not use device_read for rules. Respond with exactly one complete TasmoClaw tool block.'
         end
       end
     end
@@ -1007,6 +1325,103 @@ class TasmoClawDriver : Driver
     end
 
     var u=string.tolower(user)
+
+    var audio_word = false
+    for aw0:['audio','sound','music','song','rtttl','i2s','speaker','say','speak','volume','gain','beep']
+      var awi0 = string.find(u, aw0)
+      if awi0 != nil && awi0 >= 0
+        audio_word = true
+      end
+    end
+
+    if audio_word
+      var wants_stop = string.find(u, 'stop')
+      if wants_stop != nil && wants_stop >= 0
+        return {'tool':'audio_control','args':{'action':'stop'},'reason':'Stop I2S audio playback.'}
+      end
+
+      var wants_pause = string.find(u, 'pause')
+      if wants_pause != nil && wants_pause >= 0
+        return {'tool':'audio_control','args':{'action':'pause'},'reason':'Pause I2S audio playback.'}
+      end
+
+      var wants_resume = string.find(u, 'resume')
+      if wants_resume != nil && wants_resume >= 0
+        return {'tool':'audio_control','args':{'action':'resume'},'reason':'Resume I2S audio playback.'}
+      end
+
+      var wants_gain = false
+      for gw:['volume','gain']
+        var gi = string.find(u, gw)
+        if gi != nil && gi >= 0
+          wants_gain = true
+        end
+      end
+      if wants_gain
+        var nv = self.first_number_from_text(user)
+        if nv == nil
+          nv = '25'
+        end
+        return {'tool':'audio_control','args':{'action':'gain','value':nv},'reason':'Set I2S audio gain/volume.'}
+      end
+
+      var wants_beep = string.find(u, 'beep')
+      if wants_beep != nil && wants_beep >= 0
+        return {'tool':'audio_control','args':{'action':'beep'},'reason':'Play a short I2S beep.'}
+      end
+
+      var say_pos = string.find(u, 'say ')
+      var speak_pos = string.find(u, 'speak ')
+      if say_pos != nil && say_pos >= 0
+        return {'tool':'audio_say','args':{'text':user[say_pos + size('say ')..size(user)-1]},'reason':'Speak text with I2SSay.'}
+      elif speak_pos != nil && speak_pos >= 0
+        return {'tool':'audio_say','args':{'text':user[speak_pos + size('speak ')..size(user)-1]},'reason':'Speak text with I2SSay.'}
+      end
+
+      var named_audio = self.filename_from_text(user)
+      if named_audio != nil
+        var loop_audio = string.find(u, 'loop')
+        return {
+          'tool':'audio_file_play',
+          'args':{'path':named_audio,'action':(loop_audio != nil && loop_audio >= 0) ? 'loop' : 'play'},
+          'reason':'Play the requested audio file.'
+        }
+      end
+
+      var wants_song = false
+      for sw0:['play','song','rtttl','tune','happy']
+        var swi0 = string.find(u, sw0)
+        if swi0 != nil && swi0 >= 0
+          wants_song = true
+        end
+      end
+      if wants_song
+        var preset = self.rtttl_preset_from_text(user)
+        if preset == nil
+          return nil
+        end
+        return {
+          'tool':'audio_rtttl_play',
+          'args':{'preset':preset},
+          'reason':'Play an RTTTL tune through I2S audio.'
+        }
+      end
+    end
+
+    var display_word = false
+    for dw0:['display','screen','show on screen','show text','message']
+      var dwi0 = string.find(u, dw0)
+      if dwi0 != nil && dwi0 >= 0
+        display_word = true
+      end
+    end
+    if display_word
+      var dm = self.text_after_marker(user, ['display ', 'screen ', 'show ', 'message '])
+      if dm == ''
+        dm = user
+      end
+      return {'tool':'display_control','args':{'message':dm},'reason':'Show text on the device display.'}
+    end
 
     var wants_toggle = false
     for tw:['toggle','switch','turn on','turn off']
@@ -1033,9 +1448,16 @@ class TasmoClawDriver : Driver
         cmd = 'Power' + power_slot + ' 0'
       end
 
+      var action = 'toggle'
+      if turn_on != nil && turn_on >= 0
+        action = 'on'
+      elif turn_off != nil && turn_off >= 0
+        action = 'off'
+      end
+
       return {
-        'tool':'tasmota_cmd',
-        'args':{'command':cmd},
+        'tool':'power_control',
+        'args':{'slot':power_slot,'action':action},
         'reason':'Change relay POWER' + power_slot + ' state.'
       }
     end
@@ -1176,6 +1598,58 @@ class TasmoClawDriver : Driver
     end
 
     var says_berry = string.find(u, 'berry')
+    var says_skill = string.find(u, 'skill')
+    if says_berry != nil && says_berry >= 0 && says_skill != nil && says_skill >= 0
+      var create_skill = false
+      for cs:['create','write','make','save','install','register']
+        var csi = string.find(u, cs)
+        if csi != nil && csi >= 0
+          create_skill = true
+        end
+      end
+
+      var load_skill = false
+      for ls:['load','run','execute']
+        var lsi = string.find(u, ls)
+        if lsi != nil && lsi >= 0
+          load_skill = true
+        end
+      end
+
+      var explain_skill = false
+      for es:['explain','describe','what does']
+        var esi = string.find(u, es)
+        if esi != nil && esi >= 0
+          explain_skill = true
+        end
+      end
+
+      var skill_name = self.first_token(self.text_after_marker(user, ['called ', 'named ']))
+      if skill_name == ''
+        skill_name = self.first_token(self.text_after_marker(user, ['skill ']))
+      end
+      if skill_name == ''
+        skill_name = 'tasmo_skill'
+      end
+
+      var skill_cmd = self.first_token(self.text_after_marker(user, ['command ']))
+      if skill_cmd == ''
+        skill_cmd = skill_name
+      end
+
+      if create_skill
+        return {
+          'tool':'berry_skill_create',
+          'args':{'name':skill_name,'command':skill_cmd,'autoload':load_skill},
+          'reason':'Create a reusable Berry skill that registers a Tasmota command.'
+        }
+      elif explain_skill
+        return {'tool':'berry_skill_explain','args':{'name':skill_name},'reason':'Read and explain the requested Berry skill.'}
+      elif load_skill
+        return {'tool':'berry_skill_run','args':{'name':skill_name},'reason':'Load the requested Berry skill.'}
+      end
+    end
+
     var says_hello_world = string.find(u, 'hello world')
     var says_file = string.find(u, 'file')
     if says_berry != nil && says_berry >= 0 && says_hello_world != nil && says_hello_world >= 0 && says_file != nil && says_file >= 0
@@ -1264,8 +1738,8 @@ class TasmoClawDriver : Driver
           var di = string.find(u, dw)
           if di != nil && di >= 0
             return {
-              'tool':'tasmota_cmd',
-              'args':{'command':'Rule3 0'},
+              'tool':'rule_control',
+              'args':{'rule':'Rule3','action':'disable'},
               'reason':'Disable the Rule3 hello timer rule.'
             }
           end
@@ -1298,12 +1772,12 @@ class TasmoClawDriver : Driver
       for w2:['show','view','give','current','read','list','what']
         var ri = string.find(u, w2)
         if ri != nil && ri >= 0
-          return {'tool':'tasmota_cmd_read','args':{'command':'Rules'}}
+          return {'tool':'rule_control','args':{'rule':'Rules','action':'read'},'reason':'Read all Tasmota rules.'}
         end
       end
 
       if u == 'rules'
-        return {'tool':'tasmota_cmd_read','args':{'command':'Rules'}}
+        return {'tool':'rule_control','args':{'rule':'Rules','action':'read'},'reason':'Read all Tasmota rules.'}
       end
     end
 
@@ -1404,7 +1878,9 @@ class TasmoClawDriver : Driver
         'stage':r.find('stage'),
         'esp_err':r.find('esp_err'),
         'body':r.find('body'),
-        'hint':r.find('hint')
+        'hint':r.find('hint'),
+        'fallback_hint':r.find('fallback_hint'),
+        'webclient_error':r.find('webclient_error')
       })
     end
   end

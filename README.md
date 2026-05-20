@@ -26,8 +26,8 @@ Current port status:
 | Audio codec | In progress | ES8311 at `0x18` now initializes reliably on bus1, with deferred retry, register readback, and playback-path setup. |
 | Speaker path | In progress | GPIO46 amplifier control and TDM I2S playback setup are implemented; `I2SPlay` starts and WAV decode selection is available. Audible-output validation is still pending. |
 | Microphone/recording | In progress | WAV recording support and timed `I2SRec <seconds>,<path>` parsing are implemented and build successfully. Hardware validation of captured audio level/quality is still pending. |
-| Filesystem audio files | Pending validation | Next hardware test should create `/mic.wav` with `I2SRec 10,/mic.wav`, then play it with `I2SPlay /mic.wav`. |
-| TRMNL dashboard display | Working via local bridge | `lv.trmnl_show_png(path, rotation)` renders 1-bit TRMNL frames through LVGL. `tools/rlcd_trmnl/autoexec.be` starts 5 seconds after boot, fetches indefinitely, uses TRMNL `refresh_rate` timing, and keeps only the current frame on the filesystem. Because direct HTTPS to TRMNL is not reliable with the lightweight board TLS stack, `tools/rlcd_trmnl/trmnl_bridge.py` performs the HTTPS/API hop off-device and serves a half-resolution 1-bit PBM frame over local HTTP. |
+| Filesystem audio files | Pending validation | The file manager can switch between FlashFS and SDCard and copy/move files between them. `I2SPlay` accepts explicit `sd:/file.mp3` and `flash:/file.mp3` paths; plain `/file.mp3` keeps the current UFS behavior. |
+| TRMNL dashboard display | Working direct HTTPS, bridge optional | `lv.trmnl_show_png(path, rotation)` renders 1-bit TRMNL frames through LVGL. `tools/rlcd_trmnl/autoexec.be` starts 5 seconds after boot, fetches indefinitely, uses TRMNL `refresh_rate` timing, and keeps only the current frame on the filesystem. The script now prefers the native `idf_https_get()` and `idf_https_download()` helpers for TRMNL API/image HTTPS, with `tools/rlcd_trmnl/trmnl_bridge.py` kept as a fallback for firmware builds without the native HTTPS helper. |
 | TasmoClaw AI tools | Working on test board | `tools/tasmoclaw_tapp/` builds a Berry/TAPP web chat application for this board. It talks directly to DeepSeek, uses a small native HTTPS/UFS bridge for reliable ESP32-S3 HTTPS and SD access, and exposes guarded tools for reading sensors, power, rules, SD files, Berry programs, and applying approved Tasmota changes. |
 
 ### TasmoClaw AI tool app
@@ -51,7 +51,8 @@ TasmoClaw works by giving the model a compact registry of device tools. For requ
 Important pieces:
 
 - `tools/tasmoclaw_tapp/build_tapp.py` generates the uploadable `.tapp`; generated `dist/` artifacts are ignored and should not be committed.
-- `tasmota/tasmota_xdrv_driver/xdrv_99_tasmoclaw_https.ino` exposes `idf_https_post()` and native SD/UFS helpers to Berry when `USE_TASMOCLAW_HTTPS` is enabled.
+- `tasmota/tasmota_xdrv_driver/xdrv_99_tasmoclaw_https.ino` exposes `idf_https_post()`, `idf_https_get()`, `idf_https_download()`, and native SD/UFS helpers to Berry when `USE_TASMOCLAW_HTTPS` is enabled.
+- The Tasmota file manager now has a FlashFS/SDCard selector, plus Copy/Move actions for regular files when both filesystems are mounted. Native/TasmoClaw filesystem paths can use `sd:/...` or `flash:/...` to avoid ambiguity.
 - The default DeepSeek endpoint is `https://api.deepseek.com/chat/completions`, with `deepseek-v4-flash` as the default model and `deepseek-v4-pro` as the heavier option.
 - `TasmoClawHttpsTest` checks the native HTTPS bridge and saved DeepSeek configuration from the Tasmota command console.
 - Storage files are visible on the Tasmota filesystem as `/tasmoclaw_config.json`, `/tasmoclaw_history.json`, and `/tasmoclaw_pending.json`.
@@ -76,7 +77,22 @@ python3 build_tapp.py
 
 The detailed TasmoClaw implementation notes, smoke checklist, and troubleshooting guide live in [`tools/tasmoclaw_tapp/README.md`](tools/tasmoclaw_tapp/README.md).
 
-TRMNL bridge setup keeps API credentials out of the Berry script and out of the repository. Store credentials locally on the bridge host, or export them as environment variables:
+### TRMNL dashboard
+
+TRMNL can run directly on the board when the firmware is built with `USE_TASMOCLAW_HTTPS`. In that mode, upload `tools/rlcd_trmnl/autoexec.be` to the Tasmota filesystem as `/autoexec.be`, then create `/trmnl_config.json` on the device:
+
+```json
+{
+  "api_url": "https://trmnl.com/api/display",
+  "send_auth": true,
+  "id": "YOUR_TRMNL_ID",
+  "token": "YOUR_TRMNL_TOKEN"
+}
+```
+
+The autoexec script sends the normal TRMNL display headers, downloads the frame through the native HTTPS helper, and renders it with `lv.trmnl_show_png()`. It still falls back to Berry `webclient()` for plain HTTP URLs.
+
+The local bridge remains useful if you build firmware without native HTTPS, or if you want API credentials to live off-device. Store credentials locally on the bridge host, or export them as environment variables:
 
 ```bash
 mkdir -p ~/.config/trmnl_tasmota

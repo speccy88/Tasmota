@@ -3,6 +3,7 @@
 
   TasmoClaw ESP-IDF HTTPS bridge
   Provides idf_https_post(url, headers_json, body) to Berry.
+  Provides idf_https_get(url, headers_json) and idf_https_download(url, headers_json, path).
   Uses esp_http_client + esp_tls + mbedTLS + esp_crt_bundle.
 */
 
@@ -28,12 +29,16 @@
 #ifdef USE_UFILESYS
 #include <FS.h>
 extern FS *ufsp;
+extern FS *ffsp;
+extern uint8_t ufs_type;
+extern uint8_t ffs_type;
 #endif
 
 #define TASMOCLAW_HTTPS_MAX_BODY      32768
 #define TASMOCLAW_HTTPS_RX_BUFFER     4096
 #define TASMOCLAW_HTTPS_TX_BUFFER     4096
 #define TASMOCLAW_HTTPS_TIMEOUT_MS    30000
+#define TASMOCLAW_HTTPS_MAX_DOWNLOAD  294912
 #define TASMOCLAW_UFS_MAX_READ        32768
 
 extern "C" int tasmoclaw_mbedtls_ssl_setup_ret;
@@ -43,9 +48,29 @@ extern "C" int tasmoclaw_mbedtls_ssl_handshake_ret;
 extern "C" int tasmoclaw_mbedtls_ssl_handshake_state;
 
 static const int kTasmoClawHttpsCiphersuites[] = {
+  MBEDTLS_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+  MBEDTLS_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+  MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+  MBEDTLS_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
   MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
   MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
   0
+};
+
+static const uint16_t kTasmoClawHttpsGroups[] = {
+  MBEDTLS_SSL_IANA_TLS_GROUP_SECP256R1,
+  MBEDTLS_SSL_IANA_TLS_GROUP_SECP384R1,
+  MBEDTLS_SSL_IANA_TLS_GROUP_NONE
+};
+
+// Prefer RSA server certificates. Some services, including TRMNL's Google
+// frontend, send an ECDSA chain by default that includes a P-384 root. The
+// ESP32 build handles the RSA chain more reliably and still negotiates modern
+// ECDHE key exchange.
+static const uint16_t kTasmoClawHttpsSigAlgs[] = {
+  MBEDTLS_TLS1_3_SIG_RSA_PKCS1_SHA256,
+  MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA256,
+  MBEDTLS_TLS1_3_SIG_NONE
 };
 
 static int TasmoClawMbedSend(void *ctx, const unsigned char *buf, size_t len) {
@@ -244,6 +269,52 @@ static void TasmoClawSetHeader(void *client_ptr, const char *headers_json, const
   }
 }
 
+static void TasmoClawAppendJsonHeader(String &req, const char *headers_json, const char *key) {
+  String value;
+  if (TasmoClawJsonExtractString(headers_json, key, value) && value.length() > 0) {
+    req += F("\r\n");
+    req += key;
+    req += F(": ");
+    req += value;
+  }
+}
+
+static void TasmoClawAppendKnownHeaders(String &req, const char *headers_json, bool include_content_type) {
+  if (include_content_type) {
+    String content_type = "application/json";
+    TasmoClawJsonExtractString(headers_json, "Content-Type", content_type);
+    req += F("\r\nContent-Type: ");
+    req += content_type;
+  } else {
+    TasmoClawAppendJsonHeader(req, headers_json, "Content-Type");
+  }
+
+  String accept = "*/*";
+  TasmoClawJsonExtractString(headers_json, "Accept", accept);
+  req += F("\r\nAccept: ");
+  req += accept;
+
+  String connection = "close";
+  TasmoClawJsonExtractString(headers_json, "Connection", connection);
+  req += F("\r\nConnection: ");
+  req += connection;
+
+  String user_agent = "TasmoClaw/0.1";
+  TasmoClawJsonExtractString(headers_json, "User-Agent", user_agent);
+  req += F("\r\nUser-Agent: ");
+  req += user_agent;
+
+  TasmoClawAppendJsonHeader(req, headers_json, "Authorization");
+  TasmoClawAppendJsonHeader(req, headers_json, "ID");
+  TasmoClawAppendJsonHeader(req, headers_json, "Access-Token");
+  TasmoClawAppendJsonHeader(req, headers_json, "Refresh-Rate");
+  TasmoClawAppendJsonHeader(req, headers_json, "Battery-Voltage");
+  TasmoClawAppendJsonHeader(req, headers_json, "FW-Version");
+  TasmoClawAppendJsonHeader(req, headers_json, "RSSI");
+  TasmoClawAppendJsonHeader(req, headers_json, "Width");
+  TasmoClawAppendJsonHeader(req, headers_json, "Height");
+}
+
 static bool TasmoClawAppendBody(void *res_ptr, const char *data, size_t len) {
   TasmoClawHttpsResponse *res = (TasmoClawHttpsResponse*)res_ptr;
   if (!res || !res->body || res->cap == 0 || !data || len == 0) { return true; }
@@ -439,7 +510,7 @@ static int TasmoClawTcpConnect(const char *host, int port) {
   return fd;
 }
 
-static String TasmoClawMbedTlsPost(const char *url, const char *headers_json, const char *body, size_t body_len) {
+static String TasmoClawMbedTlsRequest(const char *method, const char *url, const char *headers_json, const char *body, size_t body_len, size_t max_body, const char *backend_name) {
   String host;
   String host_header;
   String path;
@@ -489,6 +560,8 @@ static String TasmoClawMbedTlsPost(const char *url, const char *headers_json, co
   mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
   mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
   mbedtls_ssl_conf_ciphersuites(&conf, kTasmoClawHttpsCiphersuites);
+  mbedtls_ssl_conf_groups(&conf, kTasmoClawHttpsGroups);
+  mbedtls_ssl_conf_sig_algs(&conf, kTasmoClawHttpsSigAlgs);
 
   esp_err_t bundle_err = esp_crt_bundle_attach(&conf);
   if (bundle_err != ESP_OK) {
@@ -553,40 +626,21 @@ static String TasmoClawMbedTlsPost(const char *url, const char *headers_json, co
     return TasmoClawHttpsError("verify", "certificate verification failed", (esp_err_t)flags);
   }
 
-  String content_type = "application/json";
-  String accept = "application/json";
-  String connection = "close";
-  String user_agent = "TasmoClaw/0.1";
-  String authorization;
-
-  TasmoClawJsonExtractString(headers_json, "Content-Type", content_type);
-  TasmoClawJsonExtractString(headers_json, "Accept", accept);
-  TasmoClawJsonExtractString(headers_json, "Connection", connection);
-  TasmoClawJsonExtractString(headers_json, "User-Agent", user_agent);
-  TasmoClawJsonExtractString(headers_json, "Authorization", authorization);
-
   String req;
-  req.reserve(path.length() + host_header.length() + body_len + authorization.length() + 256);
-  req += F("POST ");
+  req.reserve(path.length() + host_header.length() + body_len + 512);
+  req += method && method[0] ? method : "GET";
+  req += ' ';
   req += path;
   req += F(" HTTP/1.1\r\nHost: ");
   req += host_header;
-  req += F("\r\nContent-Type: ");
-  req += content_type;
-  req += F("\r\nAccept: ");
-  req += accept;
-  req += F("\r\nConnection: ");
-  req += connection;
-  req += F("\r\nUser-Agent: ");
-  req += user_agent;
-  if (authorization.length() > 0) {
-    req += F("\r\nAuthorization: ");
-    req += authorization;
+  const bool has_body = body && body_len > 0;
+  TasmoClawAppendKnownHeaders(req, headers_json, has_body);
+  if (has_body) {
+    req += F("\r\nContent-Length: ");
+    req += String((uint32_t)body_len);
   }
-  req += F("\r\nContent-Length: ");
-  req += String((uint32_t)body_len);
   req += F("\r\n\r\n");
-  if (body_len > 0) {
+  if (has_body) {
     req.concat(body, body_len);
   }
 
@@ -613,7 +667,7 @@ static String TasmoClawMbedTlsPost(const char *url, const char *headers_json, co
   }
 
   TasmoClawHttpsResponse raw;
-  raw.cap = TASMOCLAW_HTTPS_MAX_BODY + 1;
+  raw.cap = max_body + 1;
   raw.body = TasmoClawAllocBody(raw.cap);
   if (!raw.body) {
     close(fd);
@@ -640,6 +694,9 @@ static String TasmoClawMbedTlsPost(const char *url, const char *headers_json, co
     if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
       delay(10);
       continue;
+    }
+    if (raw.len > 0) {
+      break;
     }
     String err = TasmoClawMbedTlsError("read", "mbedtls_ssl_read failed", ret);
     free(raw.body);
@@ -669,9 +726,17 @@ static String TasmoClawMbedTlsPost(const char *url, const char *headers_json, co
   size_t payload_len = 0;
   TasmoClawExtractHttpPayload(raw.body, raw.len, &payload, &payload_len);
 
-  String out = TasmoClawHttpsSuccess(status, payload, payload_len, raw.truncated, "mbedtls");
+  String out = TasmoClawHttpsSuccess(status, payload, payload_len, raw.truncated, backend_name ? backend_name : "mbedtls");
   free(raw.body);
   return out;
+}
+
+static String TasmoClawMbedTlsPost(const char *url, const char *headers_json, const char *body, size_t body_len) {
+  return TasmoClawMbedTlsRequest("POST", url, headers_json, body, body_len, TASMOCLAW_HTTPS_MAX_BODY, "mbedtls");
+}
+
+static String TasmoClawMbedTlsGet(const char *url, const char *headers_json, size_t max_body = TASMOCLAW_HTTPS_MAX_BODY) {
+  return TasmoClawMbedTlsRequest("GET", url, headers_json, "", 0, max_body, "mbedtls");
 }
 
 static String TasmoClawTlsLastError(void *tls_ptr, const char *stage, const char *message, esp_err_t fallback_err) {
@@ -896,7 +961,90 @@ extern "C" int tasmoclaw_idf_https_post(bvm *vm) {
   be_return(vm);
 }
 
+extern "C" int tasmoclaw_idf_https_get(bvm *vm);
+extern "C" int tasmoclaw_idf_https_get(bvm *vm) {
+  const int32_t argc = be_top(vm);
+  if (argc < 2 || !be_isstring(vm, 1) || !be_isstring(vm, 2)) {
+    be_pushstring(vm, "{\"ok\":false,\"status\":0,\"error\":\"idf_https_get(url, headers_json) expects two strings\",\"esp_err\":0,\"stage\":\"args\",\"body\":\"\"}");
+    be_return(vm);
+  }
+
+  const char *url = be_tostring(vm, 1);
+  const char *headers_json = be_tostring(vm, 2);
+
+  if (url && strncmp(url, "https://", 8) == 0) {
+    String out = TasmoClawMbedTlsGet(url, headers_json);
+    be_pushstring(vm, out.c_str());
+    be_return(vm);
+  }
+
+  TasmoClawHttpsResponse response;
+  response.cap = TASMOCLAW_HTTPS_MAX_BODY + 1;
+  response.body = TasmoClawAllocBody(response.cap);
+  if (!response.body) {
+    String err = TasmoClawHttpsError("alloc", "malloc failed");
+    be_pushstring(vm, err.c_str());
+    be_return(vm);
+  }
+  response.body[0] = 0;
+
+  esp_http_client_config_t config = {};
+  config.url = url;
+  config.timeout_ms = TASMOCLAW_HTTPS_TIMEOUT_MS;
+  config.buffer_size = TASMOCLAW_HTTPS_RX_BUFFER;
+  config.buffer_size_tx = TASMOCLAW_HTTPS_TX_BUFFER;
+  config.crt_bundle_attach = esp_crt_bundle_attach;
+  config.keep_alive_enable = false;
+  config.event_handler = (http_event_handle_cb)TasmoClawHttpsEvent;
+  config.user_data = &response;
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    free(response.body);
+    String err = TasmoClawHttpsError("init", "esp_http_client_init failed");
+    be_pushstring(vm, err.c_str());
+    be_return(vm);
+  }
+
+  esp_http_client_set_method(client, HTTP_METHOD_GET);
+  esp_http_client_set_header(client, "Accept", "*/*");
+  esp_http_client_set_header(client, "Connection", "close");
+
+  TasmoClawSetHeader(client, headers_json, "Accept");
+  TasmoClawSetHeader(client, headers_json, "Authorization");
+  TasmoClawSetHeader(client, headers_json, "Connection");
+  TasmoClawSetHeader(client, headers_json, "User-Agent");
+  TasmoClawSetHeader(client, headers_json, "ID");
+  TasmoClawSetHeader(client, headers_json, "Access-Token");
+  TasmoClawSetHeader(client, headers_json, "Refresh-Rate");
+  TasmoClawSetHeader(client, headers_json, "Battery-Voltage");
+  TasmoClawSetHeader(client, headers_json, "FW-Version");
+  TasmoClawSetHeader(client, headers_json, "RSSI");
+  TasmoClawSetHeader(client, headers_json, "Width");
+  TasmoClawSetHeader(client, headers_json, "Height");
+
+  esp_err_t err = esp_http_client_perform(client);
+  const int status = esp_http_client_get_status_code(client);
+
+  String out;
+  if (err != ESP_OK && err == ESP_ERR_HTTP_INVALID_TRANSPORT && url && strncmp(url, "https://", 8) == 0) {
+    out = TasmoClawMbedTlsGet(url, headers_json);
+  } else if (err != ESP_OK) {
+    out = TasmoClawHttpsError("perform", TasmoClawEspErrName(err), err);
+  } else {
+    out = TasmoClawHttpsSuccess(status, response.body, response.len, response.truncated, "esp_http_client");
+  }
+
+  esp_http_client_cleanup(client);
+  free(response.body);
+
+  be_pushstring(vm, out.c_str());
+  be_return(vm);
+}
+
 #ifdef USE_UFILESYS
+static const uint8_t TASMOCLAW_UFS_TSDC = 1;
+
 static String TasmoClawUfsPath(const char *path) {
   if (!path || !path[0]) { return String("/"); }
   String out(path);
@@ -908,6 +1056,38 @@ static String TasmoClawUfsPath(const char *path) {
     out = "/" + out;
   }
   return out;
+}
+
+static bool TasmoClawUfsResolve(const char *path, FS **target_fs, String &target_path, const char **target_name, String &error) {
+  const char *clean_path = path;
+  *target_fs = ufsp;
+  *target_name = "ufs";
+
+  if (path && !strncasecmp(path, "sd:", 3)) {
+    clean_path = path + 3;
+    if (ufsp && (TASMOCLAW_UFS_TSDC == ufs_type)) {
+      *target_fs = ufsp;
+      *target_name = "sd";
+    } else {
+      error = F("SD card is not mounted");
+      return false;
+    }
+  } else if (path && !strncasecmp(path, "flash:", 6)) {
+    clean_path = path + 6;
+    if (ffsp && ffs_type) {
+      *target_fs = ffsp;
+      *target_name = "flash";
+    } else {
+      error = F("FlashFS is not mounted");
+      return false;
+    }
+  } else if (!*target_fs) {
+    error = F("UFS is not available");
+    return false;
+  }
+
+  target_path = TasmoClawUfsPath(clean_path);
+  return true;
 }
 
 static String TasmoClawUfsError(const char *stage, const char *error, const char *path = nullptr) {
@@ -927,13 +1107,247 @@ static String TasmoClawUfsError(const char *stage, const char *error, const char
   return out;
 }
 
+static String TasmoClawDownloadSuccess(int status, const char *path, size_t bytes, bool truncated, const char *backend) {
+  String out;
+  out.reserve(180);
+  out += F("{\"ok\":");
+  out += (status >= 200 && status < 300 && !truncated) ? F("true") : F("false");
+  out += F(",\"status\":");
+  out += String(status);
+  out += F(",\"path\":\"");
+  out += TasmoClawJsonEscape(path ? path : "");
+  out += F("\",\"bytes\":");
+  out += String((uint32_t)bytes);
+  if (backend && backend[0]) {
+    out += F(",\"backend\":\"");
+    out += TasmoClawJsonEscape(backend);
+    out += '"';
+  }
+  if (truncated) {
+    out += F(",\"truncated\":true,\"error\":\"response too large\"");
+  } else if (status < 200 || status >= 300) {
+    out += F(",\"error\":\"HTTP ");
+    out += String(status);
+    out += '"';
+  }
+  out += '}';
+  return out;
+}
+
+static String TasmoClawMbedTlsDownload(const char *url, const char *headers_json, const char *path) {
+  FS *target_fs = nullptr;
+  const char *target_name = "ufs";
+  String clean_path;
+  String resolve_error;
+  if (!TasmoClawUfsResolve(path, &target_fs, clean_path, &target_name, resolve_error)) {
+    return TasmoClawUfsError("fs", resolve_error.c_str(), path);
+  }
+
+  String host;
+  String host_header;
+  String url_path;
+  int port = 443;
+  if (!TasmoClawParseHttpsUrl(url, host, host_header, url_path, port)) {
+    return TasmoClawHttpsError("url", "expected https:// URL");
+  }
+
+  int fd = TasmoClawTcpConnect(host.c_str(), port);
+  if (fd < 0) {
+    return TasmoClawHttpsError("tcp_connect", "TCP connect failed", (esp_err_t)errno);
+  }
+
+  mbedtls_ssl_context ssl;
+  mbedtls_ssl_config conf;
+  mbedtls_ctr_drbg_context ctr_drbg;
+  mbedtls_entropy_context entropy;
+
+  mbedtls_ssl_init(&ssl);
+  mbedtls_ssl_config_init(&conf);
+  mbedtls_ctr_drbg_init(&ctr_drbg);
+  mbedtls_entropy_init(&entropy);
+
+#define TASMOCLAW_DOWNLOAD_CLEANUP() do { \
+    close(fd); \
+    mbedtls_entropy_free(&entropy); \
+    mbedtls_ctr_drbg_free(&ctr_drbg); \
+    mbedtls_ssl_config_free(&conf); \
+    mbedtls_ssl_free(&ssl); \
+  } while (0)
+
+  int ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
+                                  (const unsigned char*)"TasmoClaw", 9);
+  if (ret != 0) {
+    TASMOCLAW_DOWNLOAD_CLEANUP();
+    return TasmoClawMbedTlsError("ctr_drbg_seed", "mbedtls_ctr_drbg_seed failed", ret);
+  }
+
+  ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT,
+                                    MBEDTLS_SSL_TRANSPORT_STREAM,
+                                    MBEDTLS_SSL_PRESET_DEFAULT);
+  if (ret != 0) {
+    TASMOCLAW_DOWNLOAD_CLEANUP();
+    return TasmoClawMbedTlsError("config_defaults", "mbedtls_ssl_config_defaults failed", ret);
+  }
+
+  mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
+  mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+  mbedtls_ssl_conf_ciphersuites(&conf, kTasmoClawHttpsCiphersuites);
+  mbedtls_ssl_conf_groups(&conf, kTasmoClawHttpsGroups);
+  mbedtls_ssl_conf_sig_algs(&conf, kTasmoClawHttpsSigAlgs);
+
+  esp_err_t bundle_err = esp_crt_bundle_attach(&conf);
+  if (bundle_err != ESP_OK) {
+    TASMOCLAW_DOWNLOAD_CLEANUP();
+    return TasmoClawHttpsError("crt_bundle", "esp_crt_bundle_attach failed", bundle_err);
+  }
+
+  ret = mbedtls_ssl_setup(&ssl, &conf);
+  if (ret != 0) {
+    TASMOCLAW_DOWNLOAD_CLEANUP();
+    return TasmoClawMbedTlsError("ssl_setup", "mbedtls_ssl_setup failed", ret);
+  }
+
+  ret = mbedtls_ssl_set_hostname(&ssl, host.c_str());
+  if (ret != 0) {
+    TASMOCLAW_DOWNLOAD_CLEANUP();
+    return TasmoClawMbedTlsError("set_hostname", "mbedtls_ssl_set_hostname failed", ret);
+  }
+
+  mbedtls_ssl_set_bio(&ssl, &fd, TasmoClawMbedSend, TasmoClawMbedRecv, nullptr);
+
+  uint32_t started = millis();
+  while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
+    if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+      TASMOCLAW_DOWNLOAD_CLEANUP();
+      return TasmoClawMbedTlsError("handshake", "mbedtls_ssl_handshake failed", ret);
+    }
+    if (millis() - started > TASMOCLAW_HTTPS_TIMEOUT_MS) {
+      TASMOCLAW_DOWNLOAD_CLEANUP();
+      return TasmoClawHttpsError("handshake", "mbedtls_ssl_handshake timeout");
+    }
+    delay(10);
+  }
+
+  const uint32_t flags = mbedtls_ssl_get_verify_result(&ssl);
+  if (flags != 0) {
+    TASMOCLAW_DOWNLOAD_CLEANUP();
+    return TasmoClawHttpsError("verify", "certificate verification failed", (esp_err_t)flags);
+  }
+
+  String req;
+  req.reserve(url_path.length() + host_header.length() + 512);
+  req += F("GET ");
+  req += url_path;
+  req += F(" HTTP/1.1\r\nHost: ");
+  req += host_header;
+  TasmoClawAppendKnownHeaders(req, headers_json, false);
+  req += F("\r\n\r\n");
+
+  const unsigned char *req_data = (const unsigned char*)req.c_str();
+  size_t written_req = 0;
+  started = millis();
+  while (written_req < req.length()) {
+    ret = mbedtls_ssl_write(&ssl, req_data + written_req, req.length() - written_req);
+    if (ret > 0) {
+      written_req += (size_t)ret;
+      continue;
+    }
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+      if (millis() - started > TASMOCLAW_HTTPS_TIMEOUT_MS) { break; }
+      delay(10);
+      continue;
+    }
+    TASMOCLAW_DOWNLOAD_CLEANUP();
+    return TasmoClawMbedTlsError("write", "mbedtls_ssl_write failed", ret);
+  }
+
+  TasmoClawHttpsResponse raw;
+  raw.cap = TASMOCLAW_HTTPS_MAX_DOWNLOAD + 1;
+  raw.body = TasmoClawAllocBody(raw.cap);
+  if (!raw.body) {
+    TASMOCLAW_DOWNLOAD_CLEANUP();
+    return TasmoClawHttpsError("alloc", "malloc failed");
+  }
+  raw.body[0] = 0;
+
+  unsigned char chunk[TASMOCLAW_HTTPS_RX_BUFFER];
+  started = millis();
+  while (millis() - started <= TASMOCLAW_HTTPS_TIMEOUT_MS) {
+    ret = mbedtls_ssl_read(&ssl, chunk, sizeof(chunk));
+    if (ret > 0) {
+      TasmoClawAppendBody(&raw, (const char*)chunk, (size_t)ret);
+      started = millis();
+      continue;
+    }
+    if (ret == 0 || ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+      break;
+    }
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+      delay(10);
+      continue;
+    }
+    if (raw.len > 0) {
+      break;
+    }
+    String err = TasmoClawMbedTlsError("read", "mbedtls_ssl_read failed", ret);
+    free(raw.body);
+    TASMOCLAW_DOWNLOAD_CLEANUP();
+    return err;
+  }
+
+  mbedtls_ssl_close_notify(&ssl);
+  TASMOCLAW_DOWNLOAD_CLEANUP();
+
+  int status = 0;
+  if (strncmp(raw.body, "HTTP/", 5) == 0) {
+    char *space = strchr(raw.body, ' ');
+    if (space) { status = atoi(space + 1); }
+  }
+
+  const char *payload = "";
+  size_t payload_len = 0;
+  TasmoClawExtractHttpPayload(raw.body, raw.len, &payload, &payload_len);
+  if (payload_len == 0) {
+    String err = TasmoClawUfsError("read", "empty response body", clean_path.c_str());
+    free(raw.body);
+    return err;
+  }
+  if (raw.truncated) {
+    String err = TasmoClawDownloadSuccess(status, clean_path.c_str(), payload_len, true, "mbedtls");
+    free(raw.body);
+    return err;
+  }
+
+  File f = target_fs->open(clean_path.c_str(), "w");
+  if (!f) {
+    String err = TasmoClawUfsError("open", "file is not writable", clean_path.c_str());
+    free(raw.body);
+    return err;
+  }
+  const size_t file_written = f.write((const uint8_t*)payload, payload_len);
+  f.close();
+  free(raw.body);
+
+  if (file_written != payload_len) {
+    return TasmoClawUfsError("write", "short write", clean_path.c_str());
+  }
+  return TasmoClawDownloadSuccess(status, clean_path.c_str(), file_written, false, "mbedtls");
+}
+#undef TASMOCLAW_DOWNLOAD_CLEANUP
+
 static String TasmoClawUfsReadJson(const char *path, int32_t max_bytes) {
-  if (!ufsp) { return TasmoClawUfsError("fs", "UFS is not available", path); }
   if (max_bytes <= 0) { max_bytes = 4096; }
   if (max_bytes > TASMOCLAW_UFS_MAX_READ) { max_bytes = TASMOCLAW_UFS_MAX_READ; }
 
-  String clean_path = TasmoClawUfsPath(path);
-  File f = ufsp->open(clean_path.c_str(), "r");
+  FS *target_fs = nullptr;
+  const char *target_name = "ufs";
+  String clean_path;
+  String resolve_error;
+  if (!TasmoClawUfsResolve(path, &target_fs, clean_path, &target_name, resolve_error)) {
+    return TasmoClawUfsError("fs", resolve_error.c_str(), path);
+  }
+
+  File f = target_fs->open(clean_path.c_str(), "r");
   if (!f || f.isDirectory()) {
     return TasmoClawUfsError("open", "file not found or not readable", clean_path.c_str());
   }
@@ -958,6 +1372,9 @@ static String TasmoClawUfsReadJson(const char *path, int32_t max_bytes) {
   out += escaped;
   out += F("\",\"bytes\":");
   out += String((uint32_t)len);
+  out += F(",\"fs\":\"");
+  out += target_name;
+  out += '"';
   if (truncated) { out += F(",\"truncated\":true"); }
   out += '}';
   free(buf);
@@ -965,11 +1382,17 @@ static String TasmoClawUfsReadJson(const char *path, int32_t max_bytes) {
 }
 
 static String TasmoClawUfsWriteJson(const char *path, const char *body) {
-  if (!ufsp) { return TasmoClawUfsError("fs", "UFS is not available", path); }
   if (!body) { body = ""; }
 
-  String clean_path = TasmoClawUfsPath(path);
-  File f = ufsp->open(clean_path.c_str(), "w");
+  FS *target_fs = nullptr;
+  const char *target_name = "ufs";
+  String clean_path;
+  String resolve_error;
+  if (!TasmoClawUfsResolve(path, &target_fs, clean_path, &target_name, resolve_error)) {
+    return TasmoClawUfsError("fs", resolve_error.c_str(), path);
+  }
+
+  File f = target_fs->open(clean_path.c_str(), "w");
   if (!f) {
     return TasmoClawUfsError("open", "file is not writable", clean_path.c_str());
   }
@@ -986,6 +1409,9 @@ static String TasmoClawUfsWriteJson(const char *path, const char *body) {
   out += TasmoClawJsonEscape(clean_path.c_str());
   out += F("\",\"bytes\":");
   out += String((uint32_t)written);
+  out += F(",\"fs\":\"");
+  out += target_name;
+  out += '"';
   if (written != len) {
     out += F(",\"error\":\"short write\"");
   }
@@ -994,10 +1420,15 @@ static String TasmoClawUfsWriteJson(const char *path, const char *body) {
 }
 
 static String TasmoClawUfsListJson(const char *path) {
-  if (!ufsp) { return TasmoClawUfsError("fs", "UFS is not available", path); }
+  FS *target_fs = nullptr;
+  const char *target_name = "ufs";
+  String clean_path;
+  String resolve_error;
+  if (!TasmoClawUfsResolve(path, &target_fs, clean_path, &target_name, resolve_error)) {
+    return TasmoClawUfsError("fs", resolve_error.c_str(), path);
+  }
 
-  String clean_path = TasmoClawUfsPath(path);
-  File dir = ufsp->open(clean_path.c_str(), "r");
+  File dir = target_fs->open(clean_path.c_str(), "r");
   if (!dir) {
     return TasmoClawUfsError("open", "path not found", clean_path.c_str());
   }
@@ -1006,6 +1437,8 @@ static String TasmoClawUfsListJson(const char *path) {
   out.reserve(1024);
   out += F("{\"ok\":true,\"path\":\"");
   out += TasmoClawJsonEscape(clean_path.c_str());
+  out += F("\",\"fs\":\"");
+  out += target_name;
   out += F("\",\"entries\":[");
 
   bool first = true;
@@ -1101,10 +1534,39 @@ extern "C" int tasmoclaw_ufs_list(bvm *vm) {
   be_return(vm);
 }
 
+extern "C" int tasmoclaw_idf_https_download(bvm *vm);
+extern "C" int tasmoclaw_idf_https_download(bvm *vm) {
+#ifdef USE_UFILESYS
+  const int32_t argc = be_top(vm);
+  if (argc < 3 || !be_isstring(vm, 1) || !be_isstring(vm, 2) || !be_isstring(vm, 3)) {
+    be_pushstring(vm, "{\"ok\":false,\"status\":0,\"error\":\"idf_https_download(url, headers_json, path) expects three strings\",\"stage\":\"args\"}");
+    be_return(vm);
+  }
+  const char *url = be_tostring(vm, 1);
+  const char *headers_json = be_tostring(vm, 2);
+  const char *path = be_tostring(vm, 3);
+  if (url && strncmp(url, "https://", 8) == 0) {
+    String out = TasmoClawMbedTlsDownload(url, headers_json, path);
+    be_pushstring(vm, out.c_str());
+    be_return(vm);
+  }
+  be_pushstring(vm, "{\"ok\":false,\"status\":0,\"error\":\"idf_https_download currently expects https:// URL; use webclient fallback for http://\",\"stage\":\"url\"}");
+#else
+  be_pushstring(vm, "{\"ok\":false,\"error\":\"USE_UFILESYS is not enabled\",\"stage\":\"fs\"}");
+#endif
+  be_return(vm);
+}
+
 extern "C" void be_load_tasmoclaw_https_lib(bvm *vm);
 extern "C" void be_load_tasmoclaw_https_lib(bvm *vm) {
   be_pushntvfunction(vm, tasmoclaw_idf_https_post);
   be_setglobal(vm, "idf_https_post");
+  be_pop(vm, 1);
+  be_pushntvfunction(vm, tasmoclaw_idf_https_get);
+  be_setglobal(vm, "idf_https_get");
+  be_pop(vm, 1);
+  be_pushntvfunction(vm, tasmoclaw_idf_https_download);
+  be_setglobal(vm, "idf_https_download");
   be_pop(vm, 1);
   be_pushntvfunction(vm, tasmoclaw_ufs_read);
   be_setglobal(vm, "tasmo_ufs_read");

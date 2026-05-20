@@ -67,6 +67,9 @@ static constexpr int16_t kRlcdBeepAmplitude = 7000;
 
 extern FS *ufsp;
 extern FS *ffsp;
+extern uint8_t ufs_type;
+
+static const uint8_t I2S_UFS_TSDC = 1;
 
 #if defined(ESP32S3_BOX) || defined(ESP32S3_RLCD_4_2)
 void S3boxAudioPower(uint8_t pwr);
@@ -1219,23 +1222,39 @@ int32_t I2SPlayFile(const char *path, uint32_t decoder_type) {
   int32_t i2s_err = I2SPrepareTx();
   if ((i2s_err) != I2S_OK) { return i2s_err; }
 
+  FS *play_fs = ufsp;
+  const char *clean_path = path;
+  const char *resume_prefix = "";
+  if (!strncasecmp(path, "sd:", 3)) {
+    if ((I2S_UFS_TSDC != ufs_type) || !ufsp) { return I2S_ERR_FILE_NOT_FOUND; }
+    play_fs = ufsp;
+    clean_path = path + 3;
+    resume_prefix = "sd:";
+  } else if (!strncasecmp(path, "flash:", 6)) {
+    if (!ffsp) { return I2S_ERR_FILE_NOT_FOUND; }
+    play_fs = ffsp;
+    clean_path = path + 6;
+    resume_prefix = "flash:";
+  }
+  if (!play_fs) { return I2S_ERR_FILE_NOT_FOUND; }
+
   // check if the filename starts with '/', if not add it
   char fname[64];
-  if (path[0] != '/') {
-    snprintf(fname, sizeof(fname), "/%s", path);
+  if (clean_path[0] != '/') {
+    snprintf(fname, sizeof(fname), "/%s", clean_path);
   } else {
-    snprintf(fname, sizeof(fname), "%s", path);
+    snprintf(fname, sizeof(fname), "%s", clean_path);
   }
-  if (!ufsp->exists(fname)) { return I2S_ERR_FILE_NOT_FOUND; }
+  if (!play_fs->exists(fname)) { return I2S_ERR_FILE_NOT_FOUND; }
 
-  strncpy(audio_i2s_mp3.audio_title, fname, sizeof(audio_i2s_mp3.audio_title));
+  snprintf(audio_i2s_mp3.audio_title, sizeof(audio_i2s_mp3.audio_title), "%s%s", resume_prefix, fname);
   audio_i2s_mp3.audio_title[sizeof(audio_i2s_mp3.audio_title)-1] = 0;
   audio_i2s_mp3.current_file_type = decoder_type; //save for i2spause
 
   I2SAudioPower(true);
 
   if (audio_i2s_mp3.task_loop_mode == true){
-    File _loopFile = ufsp->open(fname);
+    File _loopFile = play_fs->open(fname);
     size_t _fsize = _loopFile.size();
     audio_i2s_mp3.preallocateBuffer = special_realloc(audio_i2s_mp3.preallocateBuffer,_fsize);
     size_t _received = _loopFile.read(reinterpret_cast<uint8_t*>(audio_i2s_mp3.preallocateBuffer),_fsize);
@@ -1243,7 +1262,7 @@ int32_t I2SPlayFile(const char *path, uint32_t decoder_type) {
 
     audio_i2s_mp3.file = new AudioFileSourceLoopBuffer (audio_i2s_mp3.preallocateBuffer, _fsize); // use the id3 var to make the code shorter down the line
   } else {
-    audio_i2s_mp3.file = new AudioFileSourceFS(*ufsp, fname);
+    audio_i2s_mp3.file = new AudioFileSourceFS(*play_fs, fname);
   }
   audio_i2s_mp3.id3 = new AudioFileSourceID3(audio_i2s_mp3.file);
 
