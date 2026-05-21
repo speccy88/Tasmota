@@ -1469,19 +1469,19 @@ class TasmoClawTools
       tasmota.gc()
       mem = tasmota.memory()
       var heap_free = mem.find('heap_free')
-      if heap_free != nil && heap_free < 56
+      if heap_free != nil && heap_free < 24
         return {
           'ok':false,
           'provider':'brave',
           'error':'Not enough free heap for direct Brave HTTPS with stock webclient',
           'heap_free':heap_free,
-          'hint':'Direct Brave needs more free heap than Full currently has on this board. Lite intentionally has no web search.'
+          'hint':'Direct Brave needs a small amount of internal heap for TLS. Clear history or retry after a moment. Lite intentionally has no web search.'
         }
       end
     except .. as e_mem,m_mem
     end
     var base = 'https://api.search.brave.com/res/v1/web/search'
-    var url = base + '?q=' + self.url_arg(q) + '&count=1&result_filter=web&safesearch=moderate&search_lang=en&country=us'
+    var url = base + '?q=' + self.url_arg(q) + '&count=1&result_filter=web&safesearch=moderate&search_lang=en&country=us&text_decorations=false&extra_snippets=false'
     var headers = {
       '_no_default_headers':true,
       '_http10':false,
