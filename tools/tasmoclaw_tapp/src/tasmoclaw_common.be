@@ -247,7 +247,7 @@ class TasmoClawCommon : Driver
 
   def page()
     if self.ui != nil
-      self.ui.chat_page()
+      self.ui.chat_page(self.variant)
     else
       self.page_lite()
     end

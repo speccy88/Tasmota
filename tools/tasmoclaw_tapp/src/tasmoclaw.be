@@ -238,7 +238,7 @@ class TasmoClawDriver : Driver
     webserver.on('/tasmoclaw/api/test', / -> global.tasmoclaw_driver.api_test(), webserver.HTTP_POST)
 
     webserver.on('/tasmoclaw/config', / -> global.tasmoclaw_driver.page_config(), webserver.HTTP_GET)
-    webserver.on('/tasmoclaw', / -> global.tasmoclaw_driver.ui.chat_page(), webserver.HTTP_GET)
+    webserver.on('/tasmoclaw', / -> global.tasmoclaw_driver.ui.chat_page('full'), webserver.HTTP_GET)
   end
 
   def page_config()
