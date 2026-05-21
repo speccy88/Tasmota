@@ -36,6 +36,8 @@ Use `--skip-extension-export` only when you want to rebuild the standalone `.tap
 
 TasmoClaw keeps its debug call sites in both artifacts. They only emit logs when Tasmota debug logging is enabled with `WebLog 4` or `SerialLog 4`, and keeping one debug-capable artifact per target keeps the install choices simple.
 
+The TasmoClaw page hero uses the OpenClaw lobster SVG paths and animation style adapted from `openclaw.ai`, with the wordmark changed to TasmoClaw. OpenClaw is MIT licensed: Copyright (c) 2026 OpenClaw Foundation.
+
 Upstream-style PRs should normally avoid generated `.tapp` artifacts and attach ready-to-upload builds to GitHub Releases. This side-project branch intentionally keeps the generated `dist/*.tapp` files tracked so they can be downloaded directly from GitHub while the board support work is in progress.
 
 ## Tasmota-Extensions Packaging
