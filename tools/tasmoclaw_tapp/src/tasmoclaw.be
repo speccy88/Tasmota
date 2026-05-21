@@ -96,8 +96,10 @@ class TasmoClawDriver : Driver
     self.cfg = self.normalize_config(self.store.load_config())
     self.cfg['tested_models'] = []
     self.history = self.store.load_history()
-    while size(self.history) > 3
-      self.history.remove(0)
+    var history_before = size(self.history)
+    self.trim_history()
+    if size(self.history) != history_before
+      self.store.save_history(self.history)
     end
     self.pending = self.store.load_pending()
     self.last_schedule_tick = 0

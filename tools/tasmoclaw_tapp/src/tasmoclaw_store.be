@@ -2,6 +2,7 @@ import persist
 import json
 import path
 import introspect
+import string
 
 var tasmoclaw_util = introspect.module('tasmoclaw_util')
 
@@ -10,7 +11,7 @@ class TasmoClawStore
 
   def init()
     self.config_file = '/tasmoclaw_config.json'
-    self.history_file = '/tasmoclaw_history.json'
+    self.history_file = '/tasmoclaw_history.md'
     self.pending_file = '/tasmoclaw_pending.json'
     self.workspace_fallback = false
     self.last_error = ''
@@ -183,6 +184,78 @@ class TasmoClawStore
     return nil
   end
 
+  def strip_blank_lines(s)
+    if s == nil
+      return ''
+    end
+    var out = str(s)
+    while size(out) > 0 && out[0..0] == '\n'
+      out = out[1..]
+    end
+    while size(out) > 0 && out[size(out)-1..size(out)-1] == '\n'
+      if size(out) == 1
+        out = ''
+      else
+        out = out[0..size(out)-2]
+      end
+    end
+    return out
+  end
+
+  def history_to_markdown(h)
+    var out = '# TasmoClaw History\n\n'
+    out += '<!-- Human-readable chat transcript. TasmoClaw parses sections that start with "## role". -->\n\n'
+    if h == nil
+      return out
+    end
+    for m:h
+      var role = self.safe_find(m, 'role')
+      var content = self.safe_find(m, 'content')
+      if role == nil role = 'assistant' end
+      if content == nil content = '' end
+      out += '## ' + str(role) + '\n\n'
+      out += str(content) + '\n\n---\n\n'
+    end
+    return out
+  end
+
+  def markdown_to_history(raw)
+    var history = []
+    if raw == nil || size(raw) == 0
+      return history
+    end
+
+    var parts = string.split(str(raw), '\n## ')
+    for i:0..size(parts)-1
+      var part = parts[i]
+      if i == 0
+        if string.find(part, '## ') == 0
+          part = part[3..]
+        else
+          continue
+        end
+      end
+
+      var first_nl = string.find(part, '\n')
+      if first_nl == nil || first_nl < 0
+        continue
+      end
+
+      var role = part[0..first_nl-1]
+      var body = part[first_nl+1..]
+      var sep = string.find(body, '\n\n---')
+      if sep != nil && sep >= 0
+        body = body[0..sep-1]
+      end
+      body = self.strip_blank_lines(body)
+
+      if role == 'user' || role == 'assistant' || role == 'tool' || role == 'approval'
+        history.push({'role':role,'content':body})
+      end
+    end
+    return history
+  end
+
   def load_config()
     tasmoclaw_util.debug('store load_config start')
     var cfg = self.default_config()
@@ -196,6 +269,7 @@ class TasmoClawStore
           cfg[k]=obj[k]
         end
         loaded = true
+        self.persist_delete(self.config_file)
       end
     except .. as e,m
       self.last_error = 'config parse failed: ' + str(m)
@@ -230,8 +304,6 @@ class TasmoClawStore
         tasmoclaw_util.debug('store save_config used persist fallback warning=' + str(r['error']))
         return {'ok':true,'fallback':'persist','warning':r['error']}
       end
-    else
-      self.persist_write(self.config_file, tasmoclaw_util.json_encode(cfg))
     end
 
     return r
@@ -243,17 +315,36 @@ class TasmoClawStore
       var raw = self.read_file(self.history_file)
       if raw != nil
         tried_file = true
-        var h = json.load(raw)
-        var hl = self.history_list(h)
-        if hl != nil
-          tasmoclaw_util.debug('store load_history count=' + str(size(hl)))
-          return hl
+        var h = self.markdown_to_history(raw)
+        if h != nil
+          tasmoclaw_util.debug('store load_history markdown count=' + str(size(h)))
+          self.persist_delete(self.history_file)
+          return h
         end
-        tasmoclaw_util.debug('store load_history ignored non-list history file')
       end
     except .. as e,m
       self.last_error = 'history parse failed: ' + str(m)
       tasmoclaw_util.debug('store history parse failed; trying persist error=' + str(m))
+    end
+
+    if !tried_file
+      try
+        var raw_legacy = self.read_file('/tasmoclaw_history.json')
+        if raw_legacy != nil
+          tried_file = true
+          var h_legacy = json.load(raw_legacy)
+          var hl_legacy = self.history_list(h_legacy)
+          if hl_legacy != nil
+            tasmoclaw_util.debug('store history migrated from json count=' + str(size(hl_legacy)))
+            self.write_file(self.history_file, self.history_to_markdown(hl_legacy))
+            self.remove_file('/tasmoclaw_history.json')
+            self.persist_delete(self.history_file)
+            return hl_legacy
+          end
+        end
+      except .. as e_legacy,m_legacy
+        tasmoclaw_util.debug('store legacy history migration failed: ' + str(m_legacy))
+      end
     end
 
     if !tried_file
@@ -264,6 +355,8 @@ class TasmoClawStore
           var hl2 = self.history_list(h2)
           if hl2 != nil
             tasmoclaw_util.debug('store history loaded from persist count=' + str(size(hl2)))
+            self.write_file(self.history_file, self.history_to_markdown(hl2))
+            self.persist_delete(self.history_file)
             return hl2
           end
           tasmoclaw_util.debug('store history persist ignored non-list value')
@@ -278,18 +371,9 @@ class TasmoClawStore
   end
 
   def save_history(h)
-    var r = self.write_file(self.history_file, tasmoclaw_util.json_encode(h))
-
-    if !r['ok']
-      var p = self.persist_write(self.history_file, tasmoclaw_util.json_encode(h))
-      if p['ok']
-        tasmoclaw_util.debug('store save_history used persist fallback warning=' + str(r['error']))
-        return {'ok':true,'fallback':'persist','warning':r['error']}
-      end
-    else
-      self.persist_write(self.history_file, tasmoclaw_util.json_encode(h))
-    end
-
+    var r = self.write_file(self.history_file, self.history_to_markdown(h))
+    self.remove_file('/tasmoclaw_history.json')
+    self.persist_delete(self.history_file)
     return r
   end
 
@@ -304,10 +388,12 @@ class TasmoClawStore
 
         if p == nil || self.safe_find(p, 'tool') == nil
           tasmoclaw_util.debug('store load_pending ignored non-map pending')
+          self.persist_delete(self.pending_file)
           return nil
         end
 
         tasmoclaw_util.debug('store load_pending found tool=' + str(self.safe_find(p, 'tool')))
+        self.persist_delete(self.pending_file)
         return p
       end
     except .. as e,m
@@ -322,6 +408,8 @@ class TasmoClawStore
           var p2 = json.load(raw2)
           if p2 != nil && self.safe_find(p2, 'tool') != nil
             tasmoclaw_util.debug('store pending loaded from persist')
+            self.write_file(self.pending_file, tasmoclaw_util.json_encode(p2))
+            self.persist_delete(self.pending_file)
             return p2
           end
           tasmoclaw_util.debug('store pending persist ignored non-map value')
@@ -337,31 +425,11 @@ class TasmoClawStore
   def save_pending(p)
     if p == nil
       var r = self.remove_file(self.pending_file)
-
-      if !r['ok']
-        var pdel = self.persist_delete(self.pending_file)
-        if pdel['ok']
-          tasmoclaw_util.debug('store save_pending remove used persist fallback warning=' + str(r['error']))
-          return {'ok':true,'fallback':'persist','warning':r['error']}
-        end
-      else
-        self.persist_delete(self.pending_file)
-      end
-
+      self.persist_delete(self.pending_file)
       return r
     else
       var r2 = self.write_file(self.pending_file, tasmoclaw_util.json_encode(p))
-
-      if !r2['ok']
-        var pw = self.persist_write(self.pending_file, tasmoclaw_util.json_encode(p))
-        if pw['ok']
-          tasmoclaw_util.debug('store save_pending used persist fallback warning=' + str(r2['error']))
-          return {'ok':true,'fallback':'persist','warning':r2['error']}
-        end
-      else
-        self.persist_write(self.pending_file, tasmoclaw_util.json_encode(p))
-      end
-
+      self.persist_delete(self.pending_file)
       return r2
     end
   end
