@@ -391,8 +391,8 @@ class TasmoClawCommon : Driver
   end
 
   def system_prompt()
-    var tools = 'device_read, sensor_read, power_read, light_control, timer_control, rule_control, tasmota_cmd_read, ufs_info, file_list, file_read, file_write, file_delete, memory_read, memory_search, memory_append, memory_forget, power_control, display_control, audio_rtttl_play, tool_sequence_run'
-    var cap = ' Lite keeps everyday work tools that fit no-PSRAM builds: status/sensors, power/light, simple timers, UFS/FlashFS, local memory, display text, and simple RTTTL audio. It cannot search the web, create/run Berry programs, edit SD file contents through Berry, or use Full-only programming skills. For requests like "turn the light on at night every day", choose timer_control/tool_sequence_run and hide the Tasmota command details from the user.'
+    var tools = 'device_read, sensor_read, power_read, light_control, timer_control, rule_control, tasmota_cmd_read, ufs_info, file_list, file_read, file_write, file_delete, memory_read, memory_search, memory_append, memory_forget, power_control, display_control, tool_sequence_run'
+    var cap = ' Lite keeps everyday work tools that fit no-PSRAM stock builds: status/sensors, power/light, simple timers, UFS/FlashFS, local memory, and display text. It cannot search the web, create/run Berry programs, edit SD file contents through Berry, or use Full-only programming skills. For requests like "turn the light on at night every day", choose timer_control/tool_sequence_run and hide the Tasmota command details from the user.'
     return 'You are TasmoClaw Lite on Tasmota. Keep answers short and useful. For live device state or device work, call a tool first. Tools: ' + tools + '.' + cap + ' Tool format only: <<<TASMOCLAW_TOOL>>> {"tool":"name","args":{},"reason":"why"} <<<END_TASMOCLAW_TOOL>>>. If calling a tool, output only the block. Use tasmota_cmd_read only for read-only commands like Status, State, Power, Time, Uptime, Mem, Module, Template, GPIO, I2CScan, Sensor, Wifi, IPAddress, TelePeriod, Rule1, Rule2, Rule3, Rules. Actions require approval unless auto approval is enabled.'
   end
 
@@ -706,13 +706,6 @@ class TasmoClawCommon : Driver
       return {'tool':'display_control','args':{'message':dm},'reason':'Show text on the device display.'}
     end
 
-    var says_audio = self.has_text(s, 'rtttl') || self.has_text(s, 'song') || self.has_text(s, 'tune') || self.has_text(s, 'happy birthday')
-    if says_audio
-      var preset = self.has_text(s, 'happy') ? 'happy' : self.text_after_marker(user, ['rtttl ', 'song ', 'tune '])
-      if preset == '' preset = 'happy' end
-      return {'tool':'audio_rtttl_play','args':{'preset':preset},'reason':'Play a small RTTTL tune.'}
-    end
-
     return self.local_power_intent(user)
   end
 
@@ -722,7 +715,7 @@ class TasmoClawCommon : Driver
     var target_sd = self.has_text(s, 'sd card') || self.has_text(s, 'sdcard') || self.has_text(s, ' sd ')
     var target_berry = self.has_text(s, 'berry') || self.has_text(s, 'script') || self.has_text(s, 'program')
     if wants_write && target_sd
-      return 'This is TasmoClaw Lite on stock firmware, so I can list SD files but cannot edit SD file contents through Berry. Use the Tasmota web file manager or Full TasmoClaw on custom firmware for SD content writes.'
+      return 'This is TasmoClaw Lite on stock firmware, so I can list SD files but cannot edit SD file contents through Berry. Use the Tasmota web file manager or a host helper for SD content writes.'
     end
     if wants_write && target_berry
       return 'This is TasmoClaw Lite, so I cannot create or run Berry programs from this build. Use the Full TasmoClaw package for Berry programming.'
@@ -1055,12 +1048,11 @@ class TasmoClawCommon : Driver
     r['memory_forget'] = {'approval':true}
     r['power_control'] = {'approval':true}
     r['display_control'] = {'approval':true}
-    r['audio_rtttl_play'] = {'approval':true}
     return r
   end
 
   def requires_approval(name, args)
-    return name == 'power_control' || name == 'light_control' || name == 'timer_control' || name == 'tool_sequence_run' || name == 'display_control' || name == 'audio_rtttl_play' || name == 'file_write' || name == 'file_delete' || name == 'memory_append' || name == 'memory_forget'
+    return name == 'power_control' || name == 'light_control' || name == 'timer_control' || name == 'tool_sequence_run' || name == 'display_control' || name == 'file_write' || name == 'file_delete' || name == 'memory_append' || name == 'memory_forget'
   end
 
   def file_path(args)
@@ -1359,15 +1351,6 @@ class TasmoClawCommon : Driver
     return {'ok':true,'command':cmd,'result':tasmota.cmd(cmd, true)}
   end
 
-  def audio_rtttl_play(args)
-    var tune = args.find('rtttl')
-    if tune == nil || tune == '' tune = args.find('tune') end
-    if tune == nil || tune == '' tune = args.find('preset') end
-    if tune == nil || tune == '' return {'ok':false,'error':'missing rtttl'} end
-    var cmd = 'I2SRtttl ' + str(tune)
-    return {'ok':true,'command':cmd,'result':tasmota.cmd(cmd, true)}
-  end
-
   def run_tool(name, args)
     if args == nil args = {} end
     if name == 'device_read'
@@ -1408,8 +1391,6 @@ class TasmoClawCommon : Driver
       return self.power_control(args)
     elif name == 'display_control'
       return self.display_control(args)
-    elif name == 'audio_rtttl_play'
-      return self.audio_rtttl_play(args)
     end
     return {'ok':false,'error':'unknown tool '+str(name)+' in '+self.variant}
   end

@@ -1,6 +1,6 @@
 # TasmoClaw TAPP
 
-TasmoClaw is a mostly Berry/TAPP Tasmota Application packaged as one locally generated `.tapp` file. It adds a small web chat page to a Tasmota ESP32 device, talks to DeepSeek or local OpenAI-compatible chat servers, and exposes tools for device status, sensors, power, UFS/SD, FlashFS files, Berry programs/scripts, memory, scheduler rules, event routing, direct Brave web search in the Full build, HTTP bridge calls, image URL inspection, display/LVGL, audio, MQTT, timers, rules, and command building.
+TasmoClaw is a mostly Berry/TAPP Tasmota Application packaged as one locally generated `.tapp` file. It adds a small web chat page to a Tasmota ESP32 device, talks to DeepSeek or local OpenAI-compatible chat servers, and exposes tools for device status, sensors, power, UFS/SD, FlashFS files, Berry programs/scripts, memory, scheduler rules, event routing, direct Brave web search in the Full build, HTTP bridge calls, image URL inspection, display/LVGL when available, MQTT, timers, rules, and command building.
 
 TasmoClaw does not use MCP, streaming, Telegram, or instant messaging. It does include an MCP-lite HTTP bridge tool: the device can call a LAN/cloud HTTP endpoint with GET or POST and feed the response back into the agent. The HTTPS path is stock Tasmota Berry `webclient()` using BearSSL. Local OpenAI-compatible servers can be reached over plain HTTP with Berry `tcpclient`.
 
@@ -77,7 +77,7 @@ failed to run compiled code (import_error - module 'tasmoclaw_ui' not found)
 
 That failure happens while importing the `.tapp`, before any HTTPS request. For standard firmware from the Tasmota web installer, upload the Lite build instead:
 
-- `tasmoclaw_lite.tapp`: the nicer TasmoClaw UI, compact chat, read tools, file read/list where standard filesystem access works, and approval-gated safe actions for power, `DisplayText`, and `I2SRtttl`.
+- `tasmoclaw_lite.tapp`: the nicer TasmoClaw UI, compact chat, read tools, file read/list where standard filesystem access works, and approval-gated safe actions for power and `DisplayText`.
 
 The Full package has a defensive autoexec guard: if it is loaded on a board without PSRAM, it prints a message and returns before importing the heavy modules. This keeps Tasmota bootable so you can open the normal file manager and remove or replace the `.tapp`. It does not make Full usable on no-PSRAM ESP32 boards; use Lite there.
 
@@ -238,7 +238,7 @@ Observed failures and cautions:
 - One explicit `Status 0` command-read test hit `HTTP -11` read timeout through the local MLX-LM/webclient path.
 - Qwen may ignore exact-output instructions or select surprising tools for requests outside the deterministic routers. Keep approval prompts enabled for actions when testing local models.
 
-Recommendation: use Qwen/MLX-LM for local status, sensor, power, rules, FlashFS files, and Lite direct-intent demos. Use DeepSeek for broader tool use, Berry programming, complex rule changes, display/audio actions, direct Brave search, or any unattended run.
+Recommendation: use Qwen/MLX-LM for local status, sensor, power, rules, FlashFS files, and Lite direct-intent demos. Use DeepSeek for broader tool use, Berry programming, complex rule changes, display actions, direct Brave search, or any unattended run.
 
 TasmoClaw defaults to the standard Tasmota Berry `webclient()` HTTPS path. This is the route that should make the `.tapp` usable by regular Tasmota users without firmware changes.
 
@@ -286,7 +286,7 @@ Filesystem paths can be made explicit with prefixes:
 - `flash:/autoexec.be` reads or writes internal FlashFS.
 - `/file.txt` keeps Tasmota's default UFS behavior and is intentionally avoided by TasmoClaw when a prompt can be mapped to `flash:/...` or `sd:/...`.
 
-The Tasmota Manage File System page has a FlashFS/SDCard selector and Copy/Move buttons for regular files when both filesystems are mounted. Audio playback uses the same explicit syntax, for example `I2SPlay sd:/music/file.mp3` or `I2SPlay flash:/startup.wav`.
+The Tasmota Manage File System page has a FlashFS/SDCard selector and Copy/Move buttons for regular files when both filesystems are mounted.
 
 The onboard temperature/humidity sensor is SHTC3 on I2C address `0x70`. Enable `USE_SHT3X`; `Status 8` should include `SHTC3` temperature, humidity, and dew point. TasmoClaw's `sensor_read` and `device_read` tools expose those readings.
 
@@ -304,11 +304,6 @@ UfsList
 - Scan I2C and explain what you see.
 - Read sensors and power.
 - Run Status 0.
-- Play a happy birthday RTTTL song.
-- Say hello from TasmoClaw.
-- Set speaker volume to 20.
-- Stop the audio.
-- Play `sd:/music/test.mp3`.
 - Show hello on the display.
 - Toggle power 2.
 - Create a Hello World file in Berry in the file system.
@@ -331,7 +326,6 @@ Supported first-class command families include:
 - Power relay reads and `PowerN 0/1/2` off/on/toggle actions.
 - Rules reads plus rule enable, disable, clear, and apply actions.
 - Display text through `DisplayText`.
-- I2S audio commands: `I2SRtttl`, `I2SPlay`, `I2SLoop`, `I2SPause`, `I2SStop`, `I2SGain`, `I2SSay`, `I2SBeep`, `I2SCodec`, `I2STime`, and `I2SRec`.
 - Light/dimmer/color commands, MQTT publish/config, telemetry/log levels, network/time settings, events, Backlog, module/template, PulseTime, and RuleTimer commands through the generic command builder.
 - Multi-command prompts through `command_sequence_run`, so TasmoClaw can execute steps such as “read sensors, read power, then toggle POWER2” in order.
 
@@ -363,10 +357,6 @@ TasmoClaw exposes these tools to DeepSeek. Read-only tools can run immediately; 
 | `automation_builder` | Build approval-gated Tasmota Timer automations from plain language. | `Turn the light on at night Monday to Sunday.` |
 | `display_control` / `display_message` | Send `DisplayText`. | `Show hello on the screen.` |
 | `dashboard_create` | Create a simple display status dashboard from live state. | `Make a dashboard for this board.` |
-| `audio_rtttl_play` | Play a complete RTTTL string or known preset with `I2SRtttl`. | `Compose and play a short original RTTTL tune.` |
-| `audio_file_play` | Play or loop an audio file/URL with `I2SPlay`/`I2SLoop`. | `Play sd:/music/test.mp3.` |
-| `audio_say` | Speak text with `I2SSay` when supported. | `Say hello from TasmoClaw.` |
-| `audio_control` | Stop, pause, resume, beep, set gain, read codec/time, or record. | `Set speaker volume to 40.` |
 | `mqtt_control` | Read MQTT config or publish with `Publish`/`Publish2`. | `Publish hello to stat/tasmoclaw/test.` |
 | `telemetry_control` | Read/set `TelePeriod`, `WebLog`, `SerialLog`, `SysLog`, or `Status`. | `Set TelePeriod to 300.` |
 | `network_control` | Read/change Wi-Fi, hostname, IP, NTP, timezone. | `Show hostname and Wi-Fi state.` |
@@ -539,9 +529,7 @@ Use prompts such as `Create flash:/memory.md with the text ...` and `Read flash:
 10. Ask TasmoClaw to create, read, run, and explain the Berry hello-world program; `HelloWorld` should return `{"HelloWorld":"ok"}` after it is run.
 11. Ask TasmoClaw to list the SD card root, then create/read/delete a small FlashFS text file.
 12. Ask `Read sensors and power`; confirm `SHTC3`, `POWER1`, and `POWER2` appear.
-13. Ask `Play a happy birthday RTTTL song`; confirm approval appears, then approve and listen for `I2SRtttl`.
-14. Ask `Set speaker volume to 20`; confirm it maps to `I2SGain 20`.
-15. Run `TasmoClaw`, `TasmoClawReset`, and `TasmoClawTest` commands.
+13. Run `TasmoClaw`, `TasmoClawReset`, and `TasmoClawTest` commands.
 
 Recent live smoke results on the ESP32-S3-RLCD-4.2 test board:
 

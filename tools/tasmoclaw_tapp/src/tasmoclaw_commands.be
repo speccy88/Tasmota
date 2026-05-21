@@ -67,47 +67,6 @@ tasmoclaw_commands.strip_fs_prefix = def(p)
   return out
 end
 
-tasmoclaw_commands.rtttl_presets = def()
-  return {
-    'happy_birthday':'Happy:d=4,o=5,b=120:8g,8g,a,g,c6,b,2g,8g,8g,a,g,d6,c6,2g,8g,8g,g6,e6,c6,b,a,2f6,8f6,e6,c6,d6,c6',
-    'happy':'Happy:d=4,o=5,b=120:8g,8g,a,g,c6,b,2g,8g,8g,a,g,d6,c6,2g,8g,8g,g6,e6,c6,b,a,2f6,8f6,e6,c6,d6,c6',
-    'success':'Success:d=16,o=5,b=180:c,e,g,c6',
-    'ok':'Success:d=16,o=5,b=180:c,e,g,c6',
-    'error':'Error:d=8,o=5,b=120:c,16p,c,16p,c',
-    'startup':'Startup:d=16,o=5,b=160:c,e,g,8c6,8p,g,c6',
-    'mario':'Mario:d=16,o=5,b=100:e6,e6,32p,e6,32p,c6,e6,32p,g6,8p,g',
-    'scale':'Scale:d=8,o=5,b=140:c,d,e,f,g,a,b,c6',
-    'twinkle':'Twinkle:d=4,o=5,b=100:c,c,g,g,a,a,2g,f,f,e,e,d,d,2c',
-    'ode':'Ode:d=4,o=5,b=120:e,e,f,g,g,f,e,d,c,c,d,e,e,d,2d'
-  }
-end
-
-tasmoclaw_commands.rtttl_key = def(name)
-  if name == nil
-    return ''
-  end
-  var key = string.tolower(str(name))
-  key = string.replace(key, ' ', '_')
-  key = string.replace(key, '-', '_')
-  return key
-end
-
-tasmoclaw_commands.is_rtttl = def(tune)
-  if tune == nil
-    return false
-  end
-  var s = str(tune)
-  var colon = string.find(s, ':')
-  var comma = string.find(s, ',')
-  var defaults = string.find(s, 'd=')
-  return colon != nil && colon >= 0 && comma != nil && comma >= 0 && defaults != nil && defaults >= 0
-end
-
-tasmoclaw_commands.rtttl_from_name = def(name)
-  var presets = tasmoclaw_commands.rtttl_presets()
-  return presets.find(tasmoclaw_commands.rtttl_key(name))
-end
-
 tasmoclaw_commands.families = def()
   return [
     {
@@ -127,12 +86,6 @@ tasmoclaw_commands.families = def()
       'title':'Power relays',
       'keywords':['power','relay','toggle','switch','on','off'],
       'examples':['Power','Power1','Power2','Power2 2','Power1 1','Power1 0']
-    },
-    {
-      'id':'audio',
-      'title':'I2S audio and RTTTL',
-      'keywords':['audio','i2s','play','song','rtttl','music','say','speak','volume','gain','beep','record'],
-      'examples':['I2SRtttl <tune>','I2SPlay sd:/music/file.mp3','I2SGain 20','I2SSay hello','I2SStop']
     },
     {
       'id':'display',
@@ -302,9 +255,6 @@ tasmoclaw_commands.classify_command = def(command)
   elif (first == 'rule1' || first == 'rule2' || first == 'rule3') && rest == ''
     safety = 'read'
     reason = 'Rule slot read is read-only.'
-  elif first == 'i2sconfig' && rest == ''
-    safety = 'read'
-    reason = 'I2SConfig without payload is read-only.'
   elif (first == 'display' || first == 'displaymodel' || first == 'displaytype' || first == 'displaywidth' || first == 'displayheight' || first == 'displaymode' || first == 'displaydimmer' || first == 'displaysize' || first == 'displayfont' || first == 'displayrotate' || first == 'displayinvert' || first == 'displaycolumns' || first == 'displayrows') && rest == ''
     safety = 'read'
     reason = 'Display command without payload is read-only.'
@@ -367,9 +317,6 @@ tasmoclaw_commands.classify_command = def(command)
   elif first == 'webcolor' || string.find(first, 'webcolor') == 0
     safety = 'write'
     reason = 'WebColor command writes UI palette settings.'
-  elif first == 'i2srtttl' || first == 'i2splay' || first == 'i2sloop' || first == 'i2spause' || first == 'i2sstop' || first == 'i2sgain' || first == 'i2ssay' || first == 'i2sbeep' || first == 'i2srec' || first == 'i2stime'
-    safety = 'action'
-    reason = 'I2S audio command changes audio state.'
   end
 
   return {
@@ -494,63 +441,6 @@ tasmoclaw_commands.power_command = def(args)
     return prefix + ' 0'
   elif action == 'toggle' || action == 'switch'
     return prefix + ' 2'
-  end
-  return nil
-end
-
-tasmoclaw_commands.audio_command = def(args)
-  var action = string.tolower(str(tasmoclaw_commands.first(args, ['action','mode'], 'rtttl')))
-  if action == 'rtttl' || action == 'song' || action == 'tune'
-    var tune = tasmoclaw_commands.first(args, ['rtttl','tune','body'], nil)
-    if tune != nil && !tasmoclaw_commands.is_rtttl(tune)
-      var named_tune = tasmoclaw_commands.rtttl_from_name(tune)
-      if named_tune == nil
-        return nil
-      end
-      tune = named_tune
-    end
-    if tune == nil
-      var preset = tasmoclaw_commands.first(args, ['preset','name','song'], nil)
-      if preset != nil
-        tune = tasmoclaw_commands.rtttl_from_name(preset)
-      end
-    end
-    if tune == nil || !tasmoclaw_commands.is_rtttl(tune)
-      return nil
-    end
-    return 'I2SRtttl ' + str(tune)
-  elif action == 'play'
-    var p = tasmoclaw_commands.first(args, ['path','file','filename','url'], '')
-    return p == '' ? 'I2SPlay' : 'I2SPlay ' + str(p)
-  elif action == 'loop'
-    var lp = tasmoclaw_commands.first(args, ['path','file','filename','url'], '')
-    return 'I2SLoop ' + str(lp)
-  elif action == 'pause'
-    return 'I2SPause'
-  elif action == 'resume'
-    return 'I2SPlay'
-  elif action == 'stop'
-    return 'I2SStop'
-  elif action == 'say' || action == 'speak'
-    var text = tasmoclaw_commands.first(args, ['text','message','content'], '')
-    return 'I2SSay ' + str(text)
-  elif action == 'gain' || action == 'volume'
-    var value = tasmoclaw_commands.first(args, ['value','level','gain','volume'], '25')
-    return 'I2SGain ' + str(value)
-  elif action == 'beep'
-    var duration = tasmoclaw_commands.first(args, ['duration','duration_ms','ms'], '')
-    return duration == '' ? 'I2SBeep' : 'I2SBeep ' + str(duration)
-  elif action == 'codec'
-    return 'I2SCodec'
-  elif action == 'time'
-    return 'I2STime'
-  elif action == 'record' || action == 'rec'
-    var seconds = tasmoclaw_commands.first(args, ['seconds','duration'], '')
-    var dest = tasmoclaw_commands.first(args, ['path','file','filename'], '')
-    if seconds == ''
-      return 'I2SRec'
-    end
-    return dest == '' ? 'I2SRec ' + str(seconds) : 'I2SRec ' + str(seconds) + ',' + str(dest)
   end
   return nil
 end
@@ -865,9 +755,7 @@ tasmoclaw_commands.build = def(args)
 
   var family = string.tolower(str(tasmoclaw_commands.first(args, ['family','domain','tool'], '')))
   var command = nil
-  if family == 'audio' || family == 'i2s' || family == 'sound'
-    command = tasmoclaw_commands.audio_command(args)
-  elif family == 'display' || family == 'screen'
+  if family == 'display' || family == 'screen'
     command = tasmoclaw_commands.display_command(args)
   elif family == 'light' || family == 'led'
     command = tasmoclaw_commands.light_command(args)

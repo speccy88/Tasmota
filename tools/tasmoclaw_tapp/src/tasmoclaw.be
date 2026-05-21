@@ -698,7 +698,7 @@ class TasmoClawDriver : Driver
           msgs.push({'role':'assistant','content':c})
           msgs.push({
             'role':'user',
-            'content':'Your TasmoClaw tool block was incomplete or invalid JSON. Resend exactly one complete tool block with valid JSON and the closing <<<END_TASMOCLAW_TOOL>>> marker. For audio_rtttl_play, keep the RTTTL short but complete.'
+            'content':'Your TasmoClaw tool block was incomplete or invalid JSON. Resend exactly one complete tool block with valid JSON and the closing <<<END_TASMOCLAW_TOOL>>> marker.'
           })
           continue
         elif c != nil && string.find(c, '<<<TASMOCLAW_TOOL>>>') != nil && string.find(c, '<<<TASMOCLAW_TOOL>>>') >= 0
@@ -1106,10 +1106,6 @@ class TasmoClawDriver : Driver
   def trace_uses_nested_result(tool)
     if tool == 'command_run' return true end
     if tool == 'berry_console' return true end
-    if tool == 'audio_rtttl_play' return true end
-    if tool == 'audio_file_play' return true end
-    if tool == 'audio_say' return true end
-    if tool == 'audio_control' return true end
     if tool == 'display_control' return true end
     if tool == 'power_control' return true end
     if tool == 'rule_control' return true end
@@ -1525,14 +1521,6 @@ class TasmoClawDriver : Driver
         return 'I created and loaded an LVGL TasmoClaw screen from ' + str(result.find('path')) + '. Result: ' + tasmoclaw_util.preview(tasmoclaw_util.json_encode(lr), 350)
       end
       return 'LVGL/display probe:' + nl + tasmoclaw_util.preview(tasmoclaw_util.json_encode(lr), 900)
-    elif tool == 'audio_rtttl_play'
-      return 'I started the RTTTL tune with ' + str(self.result_command(result, r)) + '.'
-    elif tool == 'audio_file_play'
-      return 'I ran audio playback command ' + str(self.result_command(result, r)) + '.'
-    elif tool == 'audio_say'
-      return 'I sent the speech command: ' + str(self.result_command(result, r)) + '.'
-    elif tool == 'audio_control'
-      return 'I ran audio command ' + str(self.result_command(result, r)) + '.'
     elif tool == 'display_control'
       var dr = self.map_find(r, 'Display')
       if dr != nil
@@ -2009,46 +1997,6 @@ class TasmoClawDriver : Driver
     return user[start..stop]
   end
 
-  def rtttl_preset_from_text(user)
-    if user == nil
-      return nil
-    end
-
-    var u = string.tolower(user)
-    for avoid:['not happy','not happy birthday','another','different']
-      var avoid_i = string.find(u, avoid)
-      if avoid_i != nil && avoid_i >= 0
-        return nil
-      end
-    end
-
-    if string.find(u, 'happy birthday') != nil && string.find(u, 'happy birthday') >= 0
-      return 'happy_birthday'
-    end
-    if string.find(u, 'mario') != nil && string.find(u, 'mario') >= 0
-      return 'mario'
-    end
-    if string.find(u, 'twinkle') != nil && string.find(u, 'twinkle') >= 0
-      return 'twinkle'
-    end
-    if string.find(u, 'ode') != nil && string.find(u, 'ode') >= 0
-      return 'ode'
-    end
-    if string.find(u, 'scale') != nil && string.find(u, 'scale') >= 0
-      return 'scale'
-    end
-    if string.find(u, 'success') != nil && string.find(u, 'success') >= 0
-      return 'success'
-    end
-    if string.find(u, 'error') != nil && string.find(u, 'error') >= 0
-      return 'error'
-    end
-    if string.find(u, 'startup') != nil && string.find(u, 'startup') >= 0
-      return 'startup'
-    end
-    return nil
-  end
-
   def request_needs_tool(user)
     if user == nil
       return false
@@ -2059,9 +2007,8 @@ class TasmoClawDriver : Driver
       'current','now','status','sensor','temperature','humidity','adc','analog','i2c',
       'power','relay','rule','sd','card','file','filesystem','ufs','berry','tasmota',
       'command','gpio','wifi','heap','memory','read','open','show','list','write',
-      'create','save','run','toggle','switch','turn on','turn off','play','audio',
-      'sound','song','rtttl','music','say','speak','volume','gain','beep','stop',
-      'pause','resume','display','screen','message','record','light','dimmer',
+      'create','save','run','toggle','switch','turn on','turn off','display',
+      'screen','message','light','dimmer',
       'brightness','color','colour','mqtt','publish','topic','teleperiod','weblog',
       'seriallog','event','backlog','skill','tool','timer','timers','pulsetime',
       'ruletimer','filesystem_control','network','hostname','ntp','timezone'
@@ -2101,39 +2048,13 @@ class TasmoClawDriver : Driver
       return false
     end
 
-    for ak:['toggle','switch','turn on','turn off','set ','write','create','save','run','apply','delete','remove','clear','enable','disable','play','say','speak','display','stop','pause','resume']
+    for ak:['toggle','switch','turn on','turn off','set ','write','create','save','run','apply','delete','remove','clear','enable','disable','display']
       var ai = string.find(u, ak)
       if ai != nil && ai >= 0
         return true
       end
     end
 
-    return false
-  end
-
-  def is_rtttl_text(tune)
-    if tune == nil
-      return false
-    end
-    var s = str(tune)
-    var colon = string.find(s, ':')
-    var comma = string.find(s, ',')
-    var defaults = string.find(s, 'd=')
-    return colon != nil && colon >= 0 && comma != nil && comma >= 0 && defaults != nil && defaults >= 0
-  end
-
-  def known_rtttl_name(name)
-    if name == nil
-      return false
-    end
-    var key = string.tolower(str(name))
-    key = string.replace(key, ' ', '_')
-    key = string.replace(key, '-', '_')
-    for item:['happy_birthday','happy','success','ok','error','startup','mario','scale','twinkle','ode']
-      if key == item
-        return true
-      end
-    end
     return false
   end
 
@@ -2145,43 +2066,6 @@ class TasmoClawDriver : Driver
     var u = string.tolower(user)
     var chosen_tool = tc.find('tool')
     var chosen_args = tc.find('args')
-
-    if chosen_tool == 'audio_rtttl_play'
-      var has_valid_rtttl = false
-      var has_known_preset = false
-      var supplied_title = ''
-      if chosen_args != nil
-        var supplied_rtttl = chosen_args.find('rtttl')
-        if supplied_rtttl == nil
-          supplied_rtttl = chosen_args.find('tune')
-        end
-        if supplied_rtttl == nil
-          supplied_rtttl = chosen_args.find('body')
-        end
-        if supplied_rtttl != nil
-          supplied_title = str(supplied_rtttl)
-          has_valid_rtttl = self.is_rtttl_text(supplied_rtttl)
-          if !has_valid_rtttl && self.known_rtttl_name(supplied_rtttl)
-            has_known_preset = true
-          end
-        end
-
-        var supplied_preset = chosen_args.find('preset')
-        if supplied_preset == nil
-          supplied_preset = chosen_args.find('name')
-        end
-        if supplied_preset == nil
-          supplied_preset = chosen_args.find('song')
-        end
-        if supplied_preset != nil && self.known_rtttl_name(supplied_preset)
-          has_known_preset = true
-        end
-      end
-
-      if !has_valid_rtttl && !has_known_preset
-        return 'The audio_rtttl_play tool needs a complete RTTTL string in args.rtttl, not only a song title like "' + supplied_title + '". Compose a short valid RTTTL melody now and respond with exactly one complete TasmoClaw tool block, for example {"tool":"audio_rtttl_play","args":{"rtttl":"NewTune:d=8,o=5,b=140:c,e,g,c6,g,e,c,p"},"reason":"Play a generated RTTTL melody."}.'
-      end
-    end
 
     if chosen_tool == 'berry_skill_template'
       var wants_write_skill = false
@@ -2709,88 +2593,6 @@ class TasmoClawDriver : Driver
     var says_module_probe = string.find(u, 'module')
     if (says_library != nil && says_library >= 0 && string.find(u, 'berry') != nil && string.find(u, 'berry') >= 0) || (says_module_probe != nil && says_module_probe >= 0 && string.find(u, 'probe') != nil && string.find(u, 'probe') >= 0)
       return {'tool':'berry_module_probe','args':{},'reason':'Probe available Berry modules and globals.'}
-    end
-
-    var audio_word = false
-    for aw0:['audio','sound','music','song','rtttl','i2s','speaker','say','speak','volume','gain','beep']
-      var awi0 = string.find(u, aw0)
-      if awi0 != nil && awi0 >= 0
-        audio_word = true
-      end
-    end
-
-    if audio_word
-      var wants_stop = string.find(u, 'stop')
-      if wants_stop != nil && wants_stop >= 0
-        return {'tool':'audio_control','args':{'action':'stop'},'reason':'Stop I2S audio playback.'}
-      end
-
-      var wants_pause = string.find(u, 'pause')
-      if wants_pause != nil && wants_pause >= 0
-        return {'tool':'audio_control','args':{'action':'pause'},'reason':'Pause I2S audio playback.'}
-      end
-
-      var wants_resume = string.find(u, 'resume')
-      if wants_resume != nil && wants_resume >= 0
-        return {'tool':'audio_control','args':{'action':'resume'},'reason':'Resume I2S audio playback.'}
-      end
-
-      var wants_gain = false
-      for gw:['volume','gain']
-        var gi = string.find(u, gw)
-        if gi != nil && gi >= 0
-          wants_gain = true
-        end
-      end
-      if wants_gain
-        var nv = self.first_number_from_text(user)
-        if nv == nil
-          nv = '25'
-        end
-        return {'tool':'audio_control','args':{'action':'gain','value':nv},'reason':'Set I2S audio gain/volume.'}
-      end
-
-      var wants_beep = string.find(u, 'beep')
-      if wants_beep != nil && wants_beep >= 0
-        return {'tool':'audio_control','args':{'action':'beep'},'reason':'Play a short I2S beep.'}
-      end
-
-      var say_pos = string.find(u, 'say ')
-      var speak_pos = string.find(u, 'speak ')
-      if say_pos != nil && say_pos >= 0
-        return {'tool':'audio_say','args':{'text':user[say_pos + size('say ')..size(user)-1]},'reason':'Speak text with I2SSay.'}
-      elif speak_pos != nil && speak_pos >= 0
-        return {'tool':'audio_say','args':{'text':user[speak_pos + size('speak ')..size(user)-1]},'reason':'Speak text with I2SSay.'}
-      end
-
-      var named_audio = self.filename_from_text(user)
-      if named_audio != nil
-        var loop_audio = string.find(u, 'loop')
-        return {
-          'tool':'audio_file_play',
-          'args':{'path':named_audio,'action':(loop_audio != nil && loop_audio >= 0) ? 'loop' : 'play'},
-          'reason':'Play the requested audio file.'
-        }
-      end
-
-      var wants_song = false
-      for sw0:['play','song','rtttl','tune','happy']
-        var swi0 = string.find(u, sw0)
-        if swi0 != nil && swi0 >= 0
-          wants_song = true
-        end
-      end
-      if wants_song
-        var preset = self.rtttl_preset_from_text(user)
-        if preset == nil
-          return nil
-        end
-        return {
-          'tool':'audio_rtttl_play',
-          'args':{'preset':preset},
-          'reason':'Play an RTTTL tune through I2S audio.'
-        }
-      end
     end
 
     var display_word = false
