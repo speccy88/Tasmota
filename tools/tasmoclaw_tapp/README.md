@@ -168,7 +168,8 @@ For this board, the tested SD SPI pins were GPIO21 MOSI, GPIO38 SCK, and GPIO39 
 Full TasmoClaw currently includes these ESP-Claw-inspired capabilities:
 
 - skills: list, activate, deactivate, and reset capability groups;
-- memory: local FlashFS memory read/search/write/append/forget;
+- memory: local FlashFS memory read/search/write/append/forget plus profile/personality notes;
+- guided workflows: device doctor, Waveshare bring-up checks, rule explanation, plain-language light automation builder, and display status dashboard creation;
 - scheduler: one-shot and interval schedules with manual trigger and periodic `every_second()` tick;
 - router: event rules that call tools, run commands, append memory, display text, or emit nested events;
 - web search: direct Brave Search API in the Full build only;
@@ -347,14 +348,19 @@ TasmoClaw exposes these tools to DeepSeek. Read-only tools can run immediately; 
 | `tasmota_status` | Read memory, Wi-Fi, architecture, sensors, and `Status 0`. | `Show me device status.` |
 | `tasmota_cmd_read` | Run arbitrary clearly read-only Tasmota commands. `Rules` reads Rule1/2/3. | `Run Status 0.` / `Show all rules.` |
 | `device_read` | Read sensors, power, SD/UFS, heap, and Wi-Fi together. | `Read current sensors and power states.` |
+| `device_doctor` | Run a friendly board health check across heap, Wi-Fi, SD/UFS, sensors, rules, timers, and LVGL modules. | `Is my board healthy?` |
+| `board_bringup_wizard` | Check Waveshare ESP32-S3-RLCD-4.2 bring-up status and next steps. | `Check the Waveshare board setup.` |
 | `sensor_read` | Read `I2CScan`, `Status 8`, ADC/analog, SHTC3, and sensor JSON. | `What is the temperature and ADC value?` |
 | `power_read` | Read `POWER`, `POWER1`, `POWER2`, and power status. | `Get the power value.` |
 | `power_control` | Read, turn on/off, or toggle relays with dynamic approval. | `Toggle power 2.` |
 | `rule_control` | Read, enable, disable, clear, or set rules. | `Disable Rule3.` |
+| `rule_explain` | Read Rule1/2/3 and explain triggers, actions, and cleanup hints. | `Explain my current rules.` |
 | `rule_apply` | Apply a rule definition and optionally enable/start a timer. | `Create Rule3 that prints hello every 5 seconds.` |
 | `rule_clear` | Disable and clear a rule slot. | `Remove the hello timer rule.` |
 | `light_control` | Control lights, dimmer, color, CT, white, scheme, fade, and speed. | `Set dimmer to 35.` |
+| `automation_builder` | Build approval-gated Tasmota Timer automations from plain language. | `Turn the light on at night Monday to Sunday.` |
 | `display_control` / `display_message` | Send `DisplayText`. | `Show hello on the screen.` |
+| `dashboard_create` | Create a simple display status dashboard from live state. | `Make a dashboard for this board.` |
 | `audio_rtttl_play` | Play a complete RTTTL string or known preset with `I2SRtttl`. | `Compose and play a short original RTTTL tune.` |
 | `audio_file_play` | Play or loop an audio file/URL with `I2SPlay`/`I2SLoop`. | `Play sd:/music/test.mp3.` |
 | `audio_say` | Speak text with `I2SSay` when supported. | `Say hello from TasmoClaw.` |

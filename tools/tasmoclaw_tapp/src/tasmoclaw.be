@@ -1069,6 +1069,12 @@ class TasmoClawDriver : Driver
     if tool == 'memory_write' return true end
     if tool == 'memory_append' return true end
     if tool == 'memory_forget' return true end
+    if tool == 'profile_memory' return true end
+    if tool == 'device_doctor' return true end
+    if tool == 'board_bringup_wizard' return true end
+    if tool == 'automation_builder' return true end
+    if tool == 'dashboard_create' return true end
+    if tool == 'rule_explain' return true end
     if tool == 'scheduler_list' return true end
     if tool == 'scheduler_get' return true end
     if tool == 'scheduler_add' return true end
@@ -1585,6 +1591,24 @@ class TasmoClawDriver : Driver
       return 'I saved local memory at ' + str(result.find('path')) + '.'
     elif tool == 'memory_forget'
       return 'I removed local memory at ' + str(result.find('path')) + '.'
+    elif tool == 'profile_memory'
+      if result.find('result') != nil
+        return 'Profile memory content:' + nl + str(result.find('result'))
+      end
+      if result.find('path') != nil
+        return 'I updated profile memory at ' + str(result.find('path')) + '.'
+      end
+      return 'Profile memory result:' + nl + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result), 700)
+    elif tool == 'device_doctor'
+      return str(result.find('summary')) + nl + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result.find('checks')), 1000)
+    elif tool == 'board_bringup_wizard'
+      return 'Waveshare bring-up check:' + nl + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result.find('checks')), 1000) + nl + 'Next steps: ' + str(result.find('next_steps'))
+    elif tool == 'rule_explain'
+      return 'Rule explanation:' + nl + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result.find('explanation')), 1200)
+    elif tool == 'automation_builder'
+      return 'I built the automation: ' + str(result.find('plan')) + ' Commands: ' + str(result.find('commands')) + '.'
+    elif tool == 'dashboard_create'
+      return 'I sent the display dashboard with ' + str(result.find('display_backend')) + '. Text:' + nl + str(result.find('dashboard_text'))
     elif tool == 'scheduler_list'
       return 'Schedules:' + nl + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result.find('schedules')), 1000)
     elif tool == 'scheduler_get'
@@ -2305,19 +2329,14 @@ class TasmoClawDriver : Driver
       return nil
     end
 
-    var mode = (self.text_has(s, 'sunrise') || self.text_has(s, 'morning')) ? 1 : 2
-    var action = wants_off ? 0 : 1
-    var days = self.day_mask_from_text(s)
-    var value = '{"Arm":1,"Mode":' + str(mode) + ',"Time":"00:00","Window":0,"Days":"' + days + '","Repeat":1,"Output":1,"Action":' + str(action) + '}'
     return {
-      'tool':'tool_sequence_run',
+      'tool':'automation_builder',
       'args':{
-        'items':[
-          {'tool':'timer_control','args':{'kind':'timer','slot':'1','action':'set','value':value}},
-          {'tool':'timer_control','args':{'kind':'timers','action':'enable'}}
-        ]
+        'goal':user,
+        'slot':1,
+        'output':1
       },
-      'reason':'Schedule output 1 with a Tasmota Timer using sunset/sunrise mode and enable timers.'
+      'reason':'Build a Tasmota Timer automation from the plain-language light schedule request.'
     }
   end
 
@@ -2331,6 +2350,60 @@ class TasmoClawDriver : Driver
     var sched = self.light_schedule_intent(user)
     if sched != nil
       return sched
+    end
+
+    var says_doctor = string.find(u, 'doctor')
+    var says_health = string.find(u, 'health')
+    var says_diagnose = string.find(u, 'diagnos')
+    if (says_doctor != nil && says_doctor >= 0) || (says_health != nil && says_health >= 0) || (says_diagnose != nil && says_diagnose >= 0)
+      return {'tool':'device_doctor','args':{},'reason':'Run a TasmoClaw device health check.'}
+    end
+
+    var says_bringup = string.find(u, 'bring')
+    var says_waveshare = string.find(u, 'waveshare')
+    var says_board = string.find(u, 'board')
+    if (says_bringup != nil && says_bringup >= 0) || ((says_waveshare != nil && says_waveshare >= 0) && (says_board != nil && says_board >= 0))
+      return {'tool':'board_bringup_wizard','args':{},'reason':'Check the Waveshare board bring-up state.'}
+    end
+
+    var says_rule_word = string.find(u, 'rule')
+    if says_rule_word != nil && says_rule_word >= 0
+      for rex:['explain','understand','what','why','fix','cleanup','clean up','show me']
+        var rexi = string.find(u, rex)
+        if rexi != nil && rexi >= 0
+          return {'tool':'rule_explain','args':{},'reason':'Read and explain the current Tasmota rules.'}
+        end
+      end
+    end
+
+    var says_dashboard = string.find(u, 'dashboard')
+    if says_dashboard != nil && says_dashboard >= 0
+      for dbw:['create','make','show','display','draw','screen','lvgl']
+        var dbwi = string.find(u, dbw)
+        if dbwi != nil && dbwi >= 0
+          var title = self.text_after_marker(user, ['called ', 'named ', 'title '])
+          if title == ''
+            title = 'TasmoClaw Board'
+          end
+          return {'tool':'dashboard_create','args':{'title':title},'reason':'Create a live display dashboard.'}
+        end
+      end
+    end
+
+    var says_profile = string.find(u, 'profile')
+    var says_personality = string.find(u, 'personality')
+    if (says_profile != nil && says_profile >= 0) || (says_personality != nil && says_personality >= 0)
+      for pr:['read','show','view','what']
+        var pri = string.find(u, pr)
+        if pri != nil && pri >= 0
+          return {'tool':'profile_memory','args':{'action':'read'},'reason':'Read TasmoClaw profile memory.'}
+        end
+      end
+      var content = self.text_after_marker(user, ['profile that ', 'personality that ', 'remember that ', 'remember ', 'save that ', 'set ', 'to '])
+      if content == ''
+        content = user
+      end
+      return {'tool':'profile_memory','args':{'action':'append','content':content},'reason':'Update TasmoClaw profile memory.'}
     end
 
     var has_sequence_request = false

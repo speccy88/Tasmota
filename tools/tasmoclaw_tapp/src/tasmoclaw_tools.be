@@ -23,6 +23,7 @@ class TasmoClawTools
       'memory_write':{'approval':true,'desc':'Write a TasmoClaw local memory file on FlashFS'},
       'memory_append':{'approval':true,'desc':'Append a timestamped note to a TasmoClaw local memory file on FlashFS'},
       'memory_forget':{'approval':true,'desc':'Delete a TasmoClaw local memory file'},
+      'profile_memory':{'approval':true,'desc':'Read or update the local profile/personality memory for room names, relay names, and user preferences'},
       'scheduler_list':{'approval':false,'desc':'List TasmoClaw schedules and runtime state'},
       'scheduler_get':{'approval':false,'desc':'Get one TasmoClaw schedule by id'},
       'scheduler_add':{'approval':true,'desc':'Add a once or interval schedule that emits router events'},
@@ -41,6 +42,11 @@ class TasmoClawTools
       'web_search':{'approval':false,'desc':'Search the web through direct Brave Search API'},
       'http_bridge_call':{'approval':true,'desc':'Call a local/LAN/cloud HTTP endpoint with GET or POST as an MCP-lite bridge'},
       'image_inspect':{'approval':false,'desc':'Ask an OpenAI-compatible vision endpoint to inspect an image URL'},
+      'device_doctor':{'approval':false,'desc':'Run a friendly device health check across heap, Wi-Fi, SD/UFS, I2C, sensors, rules, timers, display, and LVGL'},
+      'board_bringup_wizard':{'approval':false,'desc':'Check Waveshare ESP32-S3-RLCD-4.2 bring-up status: template clues, SD pins, I2C, UFS, display, LVGL, and sensors'},
+      'automation_builder':{'approval':true,'desc':'Build and apply common Tasmota automations from plain language, such as sunset light timers'},
+      'dashboard_create':{'approval':true,'desc':'Create a simple display status dashboard from live device state'},
+      'rule_explain':{'approval':false,'desc':'Read Tasmota rules and explain slots, triggers, actions, and possible cleanup hints'},
       'tasmota_cmd_read':{'approval':false,'desc':'Run clearly read-only Tasmota command, including Rule1/Rule2/Rule3 reads. Rules is mapped to all rule slots.'},
       'device_read':{'approval':false,'desc':'Read sensors, power state, filesystem/SD status, memory, and Wi-Fi in one compact call'},
       'sensor_read':{'approval':false,'desc':'Read I2C scan and Status 8 sensor data'},
@@ -105,11 +111,11 @@ class TasmoClawTools
 
   def skill_catalog()
     return {
-      'core':{'desc':'Core status, command safety, tool sequencing, and skill activation','tools':['skill_list','skill_activate','skill_deactivate','skill_reset','tasmota_status','tasmota_cmd_read','device_read','command_catalog_search','command_build','command_run','command_sequence_run','tool_sequence_run']},
-      'device':{'desc':'Sensors, power, rules, timers, display, LVGL, audio, lights, MQTT, telemetry, and network','tools':['sensor_read','power_read','power_control','rule_control','timer_control','display_control','lvgl_control','audio_rtttl_play','audio_file_play','audio_say','audio_control','light_control','mqtt_control','telemetry_control','network_control','system_control','webcolor_control','berry_module_probe']},
+      'core':{'desc':'Core status, command safety, tool sequencing, and skill activation','tools':['skill_list','skill_activate','skill_deactivate','skill_reset','tasmota_status','tasmota_cmd_read','device_read','device_doctor','board_bringup_wizard','command_catalog_search','command_build','command_run','command_sequence_run','tool_sequence_run']},
+      'device':{'desc':'Sensors, power, rules, timers, display, LVGL, lights, MQTT, telemetry, and network','tools':['sensor_read','power_read','power_control','rule_control','rule_explain','timer_control','automation_builder','display_control','lvgl_control','dashboard_create','light_control','mqtt_control','telemetry_control','network_control','system_control','webcolor_control','berry_module_probe']},
       'files':{'desc':'FlashFS and stock UFS/SD listing, status, delete, rename, copy/move helpers','tools':['file_read','file_write','file_list','ufs_info','sd_markdown_list','filesystem_control','file_copy','file_move','file_delete']},
       'berry':{'desc':'Berry programs, reusable Berry skills, and script library','tools':['berry_program_read','berry_program_write','berry_program_run','berry_program_explain','berry_check','berry_console','berry_skill_template','berry_skill_create','berry_skill_run','berry_skill_explain','berry_load','berry_compile','script_list','script_read','script_create','script_run','rule_apply','rule_clear','display_message','create_demo_berry']},
-      'memory':{'desc':'Local FlashFS memory files for notes, profile, and long-term summaries','tools':['memory_read','memory_search','memory_write','memory_append','memory_forget']},
+      'memory':{'desc':'Local FlashFS memory files for notes, profile, and long-term summaries','tools':['memory_read','memory_search','memory_write','memory_append','memory_forget','profile_memory']},
       'automation':{'desc':'Interval/once scheduler and event router rules','tools':['scheduler_list','scheduler_get','scheduler_add','scheduler_update','scheduler_remove','scheduler_enable','scheduler_disable','scheduler_trigger_now','scheduler_tick','router_rule_list','router_rule_get','router_rule_add','router_rule_update','router_rule_delete','router_emit']},
       'web':{'desc':'Direct Brave web search, HTTP bridge, and OpenAI-compatible image inspection','tools':['web_search','http_bridge_call','image_inspect']}
     }
@@ -458,6 +464,7 @@ class TasmoClawTools
     if name=='memory_write' return self.memory_write(args) end
     if name=='memory_append' return self.memory_append(args) end
     if name=='memory_forget' return self.memory_forget(args) end
+    if name=='profile_memory' return self.profile_memory(args) end
     if name=='scheduler_list' return self.scheduler_list(args) end
     if name=='scheduler_get' return self.scheduler_get(args) end
     if name=='scheduler_add' return self.scheduler_add(args) end
@@ -476,6 +483,11 @@ class TasmoClawTools
     if name=='web_search' return self.web_search(args) end
     if name=='http_bridge_call' return self.http_bridge_call(args) end
     if name=='image_inspect' return self.image_inspect(args) end
+    if name=='device_doctor' return self.device_doctor(args) end
+    if name=='board_bringup_wizard' return self.board_bringup_wizard(args) end
+    if name=='automation_builder' return self.automation_builder(args) end
+    if name=='dashboard_create' return self.dashboard_create(args) end
+    if name=='rule_explain' return self.rule_explain(args) end
     if name=='tasmota_cmd_read' return self.run_cmd_read(args) end
     if name=='device_read' return self.device_read(args) end
     if name=='sensor_read' return self.sensor_read(args) end
@@ -777,6 +789,31 @@ class TasmoClawTools
       end
     end
     return {'ok':true,'query':q,'hits':hits,'count':size(hits)}
+  end
+
+  def profile_memory(args)
+    if args == nil
+      args = {}
+    end
+    var action = string.tolower(str(self.first_value(args, ['action','mode'], 'read')))
+    var name = self.first_value(args, ['name','file'], 'profile.md')
+    if name == nil || name == ''
+      name = 'profile.md'
+    end
+    if action == 'read' || action == 'show' || action == 'get'
+      return self.memory_read({'name':name})
+    end
+    var content = self.first_value(args, ['content','text','note','value'], '')
+    if content == ''
+      content = 'Board profile note.'
+    end
+    if action == 'write' || action == 'set' || action == 'replace'
+      return self.memory_write({'name':name,'content':content})
+    end
+    if action == 'forget' || action == 'delete' || action == 'clear'
+      return self.memory_forget({'name':name})
+    end
+    return self.memory_append({'name':name,'content':content})
   end
 
   def schedule_file()
@@ -1916,6 +1953,155 @@ class TasmoClawTools
     }
   end
 
+  def add_check(checks, name, ok, detail)
+    checks.push({'name':name,'ok':ok,'detail':detail})
+  end
+
+  def device_doctor(args)
+    var d = self.device_read({})
+    var result = d.find('result')
+    if result == nil
+      result = {}
+    end
+    var checks = []
+    var mem = result.find('memory')
+    var heap = mem == nil ? nil : mem.find('heap_free')
+    self.add_check(checks, 'Heap', heap == nil || heap >= 60, 'heap_free=' + str(heap))
+    var psram = mem == nil ? nil : mem.find('psram_free')
+    self.add_check(checks, 'PSRAM', psram != nil && psram > 0, 'psram_free=' + str(psram))
+    var wifi = result.find('wifi')
+    var ip = wifi == nil ? nil : wifi.find('ip')
+    self.add_check(checks, 'Wi-Fi', ip != nil && str(ip) != '', 'ip=' + str(ip))
+    self.add_check(checks, 'SD/UFS', result.find('sd_mounted') == true, 'sd_mounted=' + str(result.find('sd_mounted')) + ' ufs=' + tasmoclaw_util.preview(str(result.find('ufs')), 240))
+    self.add_check(checks, 'I2C', result.find('i2cscan_error') == nil, tasmoclaw_util.preview(str(result.find('i2cscan')), 240))
+    self.add_check(checks, 'Sensors', result.find('status8_error') == nil, tasmoclaw_util.preview(str(result.find('status8')), 240))
+    var rules = {
+      'Rule1':tasmota.cmd('Rule1', true),
+      'Rule2':tasmota.cmd('Rule2', true),
+      'Rule3':tasmota.cmd('Rule3', true)
+    }
+    self.add_check(checks, 'Rules', true, tasmoclaw_util.preview(str(rules), 300))
+    self.add_check(checks, 'Timers', true, tasmoclaw_util.preview(str(tasmota.cmd('Timers', true)), 220))
+    var lv = self.berry_module_probe({'modules':['display','lv_tasmota','lvgl_panel','webclient','path','persist']})
+    self.add_check(checks, 'Display/LVGL modules', lv.find('ok') == true, tasmoclaw_util.preview(tasmoclaw_util.json_encode(lv.find('result')), 350))
+    var warnings = []
+    for c:checks
+      if c.find('ok') != true
+        warnings.push(c.find('name') + ': ' + str(c.find('detail')))
+      end
+    end
+    return {'ok':true,'summary':size(warnings) == 0 ? 'Board looks healthy.' : 'Board has ' + str(size(warnings)) + ' warning(s).','checks':checks,'warnings':warnings,'device':result}
+  end
+
+  def board_bringup_wizard(args)
+    var checks = []
+    var dev = self.device_read({}).find('result')
+    if dev == nil
+      dev = {}
+    end
+    self.add_check(checks, 'Expected SD SPI pins', true, 'GPIO21 MOSI, GPIO38 SCK, GPIO39 MISO; chip-select must match the board/template wiring.')
+    self.add_check(checks, 'SD mounted', dev.find('sd_mounted') == true, tasmoclaw_util.preview(str(dev.find('ufs')), 280))
+    self.add_check(checks, 'I2C bus', dev.find('i2cscan_error') == nil, tasmoclaw_util.preview(str(dev.find('i2cscan')), 280))
+    self.add_check(checks, 'Sensor status', dev.find('status8_error') == nil, tasmoclaw_util.preview(str(dev.find('status8')), 280))
+    self.add_check(checks, 'LVGL/display', self.lvgl_control({'action':'status'}).find('ok') == true, 'LVGL/display module probe ran.')
+    var template = nil
+    try template = tasmota.cmd('Template', true) except .. as e_t,m_t template = {'error':str(m_t)} end
+    var module_status = nil
+    try module_status = tasmota.cmd('Module', true) except .. as e_m,m_m module_status = {'error':str(m_m)} end
+    return {
+      'ok':true,
+      'board':'Waveshare ESP32-S3-RLCD-4.2',
+      'checks':checks,
+      'template':template,
+      'module':module_status,
+      'next_steps':['Confirm SD CS GPIO in the active template.','Run UfsType and Ufs if SD is not mounted.','Run I2CScan if RTC/touch/sensor devices are missing.','Use dashboard_create after LVGL/display is available.']
+    }
+  end
+
+  def rule_explain(args)
+    var rules = {
+      'Rule1':tasmota.cmd('Rule1', true),
+      'Rule2':tasmota.cmd('Rule2', true),
+      'Rule3':tasmota.cmd('Rule3', true)
+    }
+    var notes = []
+    for k:rules.keys()
+      var raw = rules[k]
+      var inner = raw == nil ? nil : raw.find(k)
+      var state = inner == nil ? '' : string.tolower(str(inner.find('State')))
+      var body = inner == nil ? '' : str(inner.find('Rules'))
+      var txt = string.tolower(body)
+      var enabled = state == 'on' || body != ''
+      var triggers = []
+      var idx = string.find(txt, 'system#boot')
+      if idx != nil && idx >= 0 triggers.push('System#Boot') end
+      idx = string.find(txt, 'time#minute')
+      if idx != nil && idx >= 0 triggers.push('Time#Minute') end
+      idx = string.find(txt, 'rules#timer')
+      var idx2 = string.find(txt, 'ruletimer')
+      if (idx != nil && idx >= 0) || (idx2 != nil && idx2 >= 0) triggers.push('RuleTimer') end
+      idx = string.find(txt, 'power')
+      if idx != nil && idx >= 0 triggers.push('Power event/action') end
+      var actions = []
+      idx = string.find(txt, 'backlog')
+      if idx != nil && idx >= 0 actions.push('Backlog') end
+      idx = string.find(txt, 'br load')
+      if idx != nil && idx >= 0 actions.push('Berry load') end
+      idx = string.find(txt, 'power')
+      if idx != nil && idx >= 0 actions.push('Power command') end
+      idx = string.find(txt, 'displaytext')
+      if idx != nil && idx >= 0 actions.push('DisplayText') end
+      notes.push({'slot':k,'enabled_or_present':enabled,'state':state,'rule':body,'triggers':triggers,'actions':actions,'raw':raw})
+    end
+    return {'ok':true,'rules':rules,'explanation':notes,'cleanup_hints':['Keep startup auto-load rules short.','Prefer one purpose per rule slot.','Use RuleTimer/PulseTime through timer_control, not ad-hoc rule edits, when possible.']}
+  end
+
+  def automation_builder(args)
+    if args == nil
+      args = {}
+    end
+    var goal = string.tolower(str(self.first_value(args, ['goal','text','request'], '')))
+    var slot = int(self.first_value(args, ['slot','timer'], 1))
+    if slot < 1
+      slot = 1
+    end
+    var output = int(self.first_value(args, ['output','relay','power'], 1))
+    if output < 1
+      output = 1
+    end
+    var wants_off = string.find(goal, 'off') != nil && string.find(goal, 'off') >= 0
+    var mode = (string.find(goal, 'sunrise') != nil && string.find(goal, 'sunrise') >= 0) || (string.find(goal, 'morning') != nil && string.find(goal, 'morning') >= 0) ? 1 : 2
+    var action = wants_off ? 0 : 1
+    var days = 'SMTWTFS'
+    if string.find(goal, 'weekend') != nil && string.find(goal, 'weekend') >= 0
+      days = 'S-----S'
+    elif string.find(goal, 'weekday') != nil && string.find(goal, 'weekday') >= 0
+      days = '-MTWTF-'
+    end
+    var value = '{"Arm":1,"Mode":' + str(mode) + ',"Time":"00:00","Window":0,"Days":"' + days + '","Repeat":1,"Output":' + str(output) + ',"Action":' + str(action) + '}'
+    var commands = [
+      'Timer' + str(slot) + ' ' + value,
+      'Timers 1'
+    ]
+    var res = self.command_sequence_run({'commands':commands,'confirm':true})
+    return {'ok':res.find('ok'),'goal':goal,'plan':'Timer' + str(slot) + ' uses ' + (mode == 2 ? 'sunset' : 'sunrise') + ' every selected day and enables Timers.','commands':commands,'result':res}
+  end
+
+  def dashboard_create(args)
+    var dev = self.device_read({}).find('result')
+    var title = self.first_value(args, ['title','name'], 'TasmoClaw Board')
+    var pmap = dev == nil ? nil : dev.find('power')
+    var wmap = dev == nil ? nil : dev.find('wifi')
+    var power = pmap == nil ? '' : 'P1=' + str(pmap.find('POWER1')) + ' P2=' + str(pmap.find('POWER2'))
+    var wifi = wmap == nil ? '' : str(wmap.find('ip')) + ' RSSI=' + str(wmap.find('rssi'))
+    var sd = dev == nil ? '' : str(dev.find('sd_mounted'))
+    var text = str(title) + ' | Wi-Fi ' + wifi + ' | SD ' + sd + ' | ' + power + ' | Heap ' + str(tasmota.memory().find('heap_free')) + ' KB'
+    var r = self.display_control({'text':text})
+    r['dashboard_text'] = text
+    r['display_backend'] = 'DisplayText'
+    return r
+  end
+
   def power_read(args)
     var out = self.power_snapshot()
 
@@ -2336,8 +2522,13 @@ class TasmoClawTools
       c += "scr.set_style_bg_color(lv.color(0x05050A), 0)\n"
       c += "var title = lv.label(scr)\n"
       c += "title.set_text(\"" + self.escape_berry_string(text) + "\")\n"
-      c += "title.set_style_text_color(lv.color(0x39FF14), 0)\n"
-      c += "title.align(lv.ALIGN_CENTER, 0, 0)\n"
+      if action == 'dashboard'
+        c += "title.set_style_text_color(lv.color(0xEAF2FF), 0)\n"
+        c += "title.align(lv.ALIGN_TOP_LEFT, 18, 18)\n"
+      else
+        c += "title.set_style_text_color(lv.color(0x39FF14), 0)\n"
+        c += "title.align(lv.ALIGN_CENTER, 0, 0)\n"
+      end
       c += "lv.scr_load(scr)\n"
       c += "lv.refr_now(0)\n"
       var wr = self.file_write({'path':pth,'content':c})
