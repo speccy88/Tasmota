@@ -1,8 +1,8 @@
 # TasmoClaw TAPP
 
-TasmoClaw is a mostly Berry/TAPP Tasmota Application packaged as one locally generated `.tapp` file. It adds a small web chat page to a Tasmota ESP32 device, talks to DeepSeek or local OpenAI-compatible chat servers, and exposes tools for device status, sensors, power, UFS/SD, FlashFS files, Berry programs/scripts, memory, scheduler rules, event routing, web search, HTTP bridge calls, image URL inspection, display/LVGL, audio, MQTT, timers, rules, and command building.
+TasmoClaw is a mostly Berry/TAPP Tasmota Application packaged as one locally generated `.tapp` file. It adds a small web chat page to a Tasmota ESP32 device, talks to DeepSeek or local OpenAI-compatible chat servers, and exposes tools for device status, sensors, power, UFS/SD, FlashFS files, Berry programs/scripts, memory, scheduler rules, event routing, direct Brave web search in the Full build, HTTP bridge calls, image URL inspection, display/LVGL, audio, MQTT, timers, rules, and command building.
 
-TasmoClaw does not use MCP, streaming, Telegram, or instant messaging. It does include an MCP-lite HTTP bridge tool: the device can call a LAN/cloud HTTP endpoint with GET or POST and feed the response back into the agent. The HTTPS path is stock Tasmota Berry `webclient()` using BearSSL. Local OpenAI-compatible servers and LAN search proxies can be reached over plain HTTP with Berry `tcpclient`.
+TasmoClaw does not use MCP, streaming, Telegram, or instant messaging. It does include an MCP-lite HTTP bridge tool: the device can call a LAN/cloud HTTP endpoint with GET or POST and feed the response back into the agent. The HTTPS path is stock Tasmota Berry `webclient()` using BearSSL. Local OpenAI-compatible servers can be reached over plain HTTP with Berry `tcpclient`.
 
 ## Requirements
 
@@ -10,8 +10,7 @@ TasmoClaw does not use MCP, streaming, Telegram, or instant messaging. It does i
 - Network and TLS support for `https://api.deepseek.com/chat/completions`.
 - Recommended for this board: PSRAM enabled, `USE_SDCARD`, and `USE_SHT3X`.
 - A DeepSeek API key.
-- Optional: Brave Search API key for cloud web search.
-- Optional: SearXNG on a LAN host for local/private web search.
+- Optional for Full: Brave Search API key for direct cloud web search.
 
 ## Build the TAPP
 
@@ -141,80 +140,17 @@ http://<mac-lan-ip>:11434/v1/chat/completions
 
 TasmoClaw does not hard-code local model names. Put whatever model/deployment name your local server expects in the Model field.
 
-## Search: Brave Cloud Or Local SearXNG
+## Search: Direct Brave API
 
-TasmoClaw has one `web_search` tool with two providers:
-
-- `brave`: Brave Search API. Configure `Search provider = brave` and set the Brave Search API key.
-- `searxng`: local/LAN SearXNG JSON endpoint. Configure `Search provider = searxng` and set `SearXNG URL`, for example `http://<mac-lan-ip>:8888/search`.
-
-Stock Tasmota's Berry `webclient()` may fail against some HTTPS APIs even when other HTTPS endpoints work. If direct Brave HTTPS returns a negative webclient status, run a small LAN bridge and set `Brave proxy URL` to the bridge endpoint. In proxy mode, keep the Brave API key on the host proxy; TasmoClaw talks to the bridge over LAN HTTP without adding custom auth headers. For plain HTTP LAN URLs, TasmoClaw uses a low-level `tcpclient` GET path so the search proxies and `http_bridge_call` still work when the full app leaves too little heap for `webclient()`.
+Full TasmoClaw has one `web_search` tool. It calls Brave Search directly from stock Tasmota Berry `webclient()`:
 
 ```text
-Search provider: brave
-Brave Search API key: blank when the proxy holds the key
-Brave proxy URL: http://<mac-lan-ip>:8767/res/v1/web/search
+https://api.search.brave.com/res/v1/web/search
 ```
 
-The included helper can run that bridge without storing the key in the repo:
+Set only the Brave Search API key in `/tasmoclaw/config`. The request uses conservative stock-firmware defaults: `count=1`, `result_filter=web`, `safesearch=moderate`, `search_lang=en`, and `country=us`. Higher counts produced larger Brave response bodies that could wedge stock `webclient()` on the Waveshare board while Full TasmoClaw was loaded.
 
-```bash
-BRAVE_SEARCH_API_KEY=<key> \
-python3 tools/tasmoclaw_tapp/brave_search_proxy.py --host 0.0.0.0 --port 8767
-```
-
-If the host Python certificate store cannot verify Brave's TLS chain, add `--no-verify-tls` or fix the host CA store. Do not commit API keys.
-
-For the most reliable stock-firmware path, run the combined compact proxy on a LAN port the ESP32 can already reach:
-
-```bash
-BRAVE_SEARCH_API_KEY=<key> \
-python3 tools/tasmoclaw_tapp/tasmoclaw_search_proxy.py \
-  --host 0.0.0.0 \
-  --port 8766 \
-  --searxng-upstream http://127.0.0.1:8888/search \
-  --no-verify-tls
-```
-
-Then configure:
-
-```text
-Brave proxy URL: http://<mac-lan-ip>:8766/brave
-SearXNG URL: http://<mac-lan-ip>:8766/searxng
-```
-
-The local SearXNG path was tested with SearXNG installed from source in a Python virtualenv, with JSON enabled in `settings.yml`:
-
-```bash
-git clone --depth 1 https://github.com/searxng/searxng.git /tmp/searxng
-python3 -m venv /tmp/searxng/.venv
-/tmp/searxng/.venv/bin/pip install -U pip wheel setuptools
-/tmp/searxng/.venv/bin/pip install -r /tmp/searxng/requirements.txt -r /tmp/searxng/requirements-server.txt
-/tmp/searxng/.venv/bin/pip install --no-build-isolation -e /tmp/searxng
-```
-
-Use a settings copy with `server.bind_address: "0.0.0.0"` and `search.formats` containing `json`, then run:
-
-```bash
-SEARXNG_SETTINGS_PATH=/tmp/searxng/settings-local.yml \
-SEARXNG_SECRET=<local-secret> \
-/tmp/searxng/.venv/bin/python -m searx.webapp
-```
-
-From the board, use the LAN IP, not `127.0.0.1`, because `127.0.0.1` would be the ESP32 itself.
-
-If stock `webclient()` struggles with the full SearXNG JSON response and you do not want the combined proxy, run the included compact bridge and point `SearXNG URL` at it:
-
-```bash
-python3 tools/tasmoclaw_tapp/searxng_compact_proxy.py \
-  --host 0.0.0.0 \
-  --port 8768 \
-  --upstream http://127.0.0.1:8888/search
-```
-
-```text
-SearXNG URL: http://<mac-lan-ip>:8768/search
-```
+There is no search proxy mode and no alternate search provider in the app. Lite does not include web search, which keeps the no-PSRAM build smaller and preserves heap for chat and local device tools.
 
 ## Stock Firmware UFS/SD Limits
 
@@ -235,7 +171,7 @@ Full TasmoClaw currently includes these ESP-Claw-inspired capabilities:
 - memory: local FlashFS memory read/search/write/append/forget;
 - scheduler: one-shot and interval schedules with manual trigger and periodic `every_second()` tick;
 - router: event rules that call tools, run commands, append memory, display text, or emit nested events;
-- web search: Brave cloud or SearXNG local/LAN;
+- web search: direct Brave Search API in the Full build only;
 - HTTP bridge: GET/POST calls to local/cloud services;
 - image inspection: OpenAI-compatible `image_url` vision endpoint, with clear stock-firmware limits for SD/base64 file uploads;
 - files/scripts: FlashFS file copy/move/delete plus reusable Berry script create/read/list/run.
@@ -299,7 +235,7 @@ Observed failures and cautions:
 - One explicit `Status 0` command-read test hit `HTTP -11` read timeout through the local MLX-LM/webclient path.
 - Qwen may ignore exact-output instructions or select surprising tools for requests outside the deterministic routers. Keep approval prompts enabled for actions when testing local models.
 
-Recommendation: use Qwen/MLX-LM for local status, sensor, power, rules, FlashFS files, LAN search, and Lite direct-intent demos. Use DeepSeek for broader tool use, Berry programming, complex rule changes, display/audio actions, or any unattended run.
+Recommendation: use Qwen/MLX-LM for local status, sensor, power, rules, FlashFS files, and Lite direct-intent demos. Use DeepSeek for broader tool use, Berry programming, complex rule changes, display/audio actions, direct Brave search, or any unattended run.
 
 TasmoClaw defaults to the standard Tasmota Berry `webclient()` HTTPS path. This is the route that should make the `.tapp` usable by regular Tasmota users without firmware changes.
 
@@ -555,7 +491,7 @@ Use prompts such as `Create flash:/memory.md with the text ...` and `Read flash:
 
 - No streaming, MCP, Telegram/IM, or required local proxy.
 - DeepSeek or OpenAI-compatible Chat Completions only.
-- HTTPS uses Berry `webclient()`/BearSSL. Plain HTTP local model and search endpoints use Berry `tcpclient`.
+- HTTPS uses Berry `webclient()`/BearSSL. Plain HTTP local model endpoints use Berry `tcpclient`.
 - PSRAM must be enabled for comfortable HTTPS/JSON operation on this board.
 - SD UFS listing requires a mounted SD card and the SDIO template pins above; SD file-content read/write uses the stock web file manager or host endpoints.
 - SHTC3 readings require `USE_SHT3X` and a working I2C bus.
@@ -571,7 +507,7 @@ Use prompts such as `Create flash:/memory.md with the text ...` and `Read flash:
 - `webclient unavailable`: the firmware build may not include webclient support.
 - HTTP 401/403: check the API key.
 - HTTP 404: check the API URL.
-- HTTPS or request failures: run the Berry `webclient()` diagnostic above, then reduce prompt size or use a LAN plain-HTTP local model/proxy if stock HTTPS cannot complete the request.
+- HTTPS or request failures: run the Berry `webclient()` diagnostic above, then reduce prompt size or use a LAN plain-HTTP local model if stock HTTPS cannot complete the request.
 - Detailed debug logs: run `WebLog 4` for web console logs or `SerialLog 4` for serial logs, then reproduce the issue. TasmoClaw emits `TCL:` debug lines for chat loop steps, tool selection, storage fallbacks, webclient/tcpclient start/result/failure, HTTP status, body byte counts, and retry attempts. API keys and Authorization headers are not logged.
 - `HTTP -8 from Tasmota webclient before receiving a server response (too little RAM)`: BearSSL can usually still work; the request is too large for available heap. Keep `prompt mode` on `compact`, lower `context byte limit` to around `3500`, reduce `history limit`, clear chat history, and retry. `TCL: llm call start ... payload_bytes=...` in `WebLog 4` shows the request size.
 - `malloc failed`: check `Status 0`; `PsrMax` should be `8192` on the Waveshare board and `PsrFree` should be non-zero.

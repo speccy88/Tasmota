@@ -26,9 +26,6 @@ class TasmoClawCommon : Driver
       'max_tokens':650,
       'history_limit':4,
       'auto_approve_tools':false,
-      'search_provider':'searxng',
-      'brave_proxy_url':'',
-      'searxng_url':'',
       'tested_models':[]
     }
   end
@@ -96,11 +93,11 @@ class TasmoClawCommon : Driver
 
   def normalize(c)
     var d = self.defaults()
+    var clean = {}
     for k:d.keys()
-      if c.find(k) == nil
-        c[k] = d[k]
-      end
+      clean[k] = c.find(k) == nil ? d[k] : c[k]
     end
+    c = clean
     var old_transport_key = 'https_' + 'transport'
     if c.find(old_transport_key) != nil
       try c.remove(old_transport_key) except .. as e_rm,m_rm end
@@ -269,9 +266,9 @@ class TasmoClawCommon : Driver
     webserver.content_start('TasmoClaw Lite Config')
     webserver.content_send_style()
     webserver.content_send('<style>.tc{max-width:680px;margin:auto;text-align:left}input,select{width:100%;box-sizing:border-box}</style>')
-    webserver.content_send('<div class="tc"><h2>TasmoClaw Lite Config</h2><p><a href="/tasmoclaw"><button>Back</button></a></p><label>Provider</label><select id="provider"><option value="deepseek">DeepSeek</option><option value="local_openai">Local OpenAI-compatible</option></select><label>API URL</label><input id="api_url" placeholder="https://api.deepseek.com/chat/completions or http://mac-ip:8080/v1/chat/completions"><label>Model</label><input id="model" list="model_suggestions" placeholder="deepseek-v4-flash or local model id"><datalist id="model_suggestions"><option value="deepseek-v4-flash"><option value="deepseek-v4-pro"><option value="local"></datalist><label>API Key</label><input id="api_key" type="password"><label>Search provider</label><select id="search_provider"><option value="searxng">SearXNG local/LAN</option><option value="brave">Brave via LAN proxy</option></select><label>Brave proxy URL</label><input id="brave_proxy_url" placeholder="http://lan-host:8888/brave"><label>SearXNG URL</label><input id="searxng_url" placeholder="http://lan-host:8888/search"><label>Max tokens</label><input id="max_tokens" type="number"><label>History limit</label><input id="history_limit" type="number"><p><label><input id="auto_approve_tools" type="checkbox" style="width:auto"> Disable permission prompts</label></p>')
+    webserver.content_send('<div class="tc"><h2>TasmoClaw Lite Config</h2><p><a href="/tasmoclaw"><button>Back</button></a></p><label>Provider</label><select id="provider"><option value="deepseek">DeepSeek</option><option value="local_openai">Local OpenAI-compatible</option></select><label>API URL</label><input id="api_url" placeholder="https://api.deepseek.com/chat/completions or http://mac-ip:8080/v1/chat/completions"><label>Model</label><input id="model" list="model_suggestions" placeholder="deepseek-v4-flash or local model id"><datalist id="model_suggestions"><option value="deepseek-v4-flash"><option value="deepseek-v4-pro"><option value="local"></datalist><label>API Key</label><input id="api_key" type="password"><label>Max tokens</label><input id="max_tokens" type="number"><label>History limit</label><input id="history_limit" type="number"><p><label><input id="auto_approve_tools" type="checkbox" style="width:auto"> Disable permission prompts</label></p>')
     webserver.content_send('<p><button id="save">Save</button> <button id="test">Test API</button></p><div id="msg"></div></div>')
-    webserver.content_send('<script>const ids=["provider","api_url","model","api_key","search_provider","brave_proxy_url","searxng_url","max_tokens","history_limit"],q=id=>document.getElementById(id),msg=q("msg");function pc(){q("api_key").placeholder=q("provider").value=="local_openai"?"optional for local servers":"DeepSeek API key"}q("provider").onchange=pc;fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>{let c=x.config||{};ids.forEach(id=>{if(c[id]!=null)q(id).value=c[id]});if(q("auto_approve_tools"))q("auto_approve_tools").checked=!!c.auto_approve_tools;pc()});function body(){let c={};ids.forEach(id=>c[id]=q(id).value);c.max_tokens=parseInt(c.max_tokens);c.history_limit=parseInt(c.history_limit);if(q("auto_approve_tools"))c.auto_approve_tools=q("auto_approve_tools").checked;return c}q("save").onclick=()=>fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>msg.textContent=x.ok?"Saved":x.error);q("test").onclick=()=>fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>msg.textContent=x.ok?x.content:x.error)</script>')
+    webserver.content_send('<script>const ids=["provider","api_url","model","api_key","max_tokens","history_limit"],q=id=>document.getElementById(id),msg=q("msg");function pc(){q("api_key").placeholder=q("provider").value=="local_openai"?"optional for local servers":"DeepSeek API key"}q("provider").onchange=pc;fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>{let c=x.config||{};ids.forEach(id=>{if(c[id]!=null)q(id).value=c[id]});if(q("auto_approve_tools"))q("auto_approve_tools").checked=!!c.auto_approve_tools;pc()});function body(){let c={};ids.forEach(id=>c[id]=q(id).value);c.max_tokens=parseInt(c.max_tokens);c.history_limit=parseInt(c.history_limit);if(q("auto_approve_tools"))c.auto_approve_tools=q("auto_approve_tools").checked;return c}q("save").onclick=()=>fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>msg.textContent=x.ok?"Saved":x.error);q("test").onclick=()=>fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>msg.textContent=x.ok?x.content:x.error)</script>')
     webserver.content_stop()
   end
 
@@ -394,8 +391,8 @@ class TasmoClawCommon : Driver
   end
 
   def system_prompt()
-    var tools = 'device_read, sensor_read, power_read, light_control, timer_control, rule_control, tasmota_cmd_read, ufs_info, file_list, file_read, file_write, file_delete, memory_read, memory_search, memory_append, memory_forget, web_search, power_control, display_control, audio_rtttl_play, tool_sequence_run'
-    var cap = ' Lite keeps everyday work tools that fit no-PSRAM builds: status/sensors, power/light, simple timers, UFS/FlashFS, local memory, LAN search proxies, display text, and simple RTTTL audio. It cannot create/run Berry programs, edit SD file contents through Berry, or use Full-only programming skills. For requests like "turn the light on at night every day", choose timer_control/tool_sequence_run and hide the Tasmota command details from the user.'
+    var tools = 'device_read, sensor_read, power_read, light_control, timer_control, rule_control, tasmota_cmd_read, ufs_info, file_list, file_read, file_write, file_delete, memory_read, memory_search, memory_append, memory_forget, power_control, display_control, audio_rtttl_play, tool_sequence_run'
+    var cap = ' Lite keeps everyday work tools that fit no-PSRAM builds: status/sensors, power/light, simple timers, UFS/FlashFS, local memory, display text, and simple RTTTL audio. It cannot search the web, create/run Berry programs, edit SD file contents through Berry, or use Full-only programming skills. For requests like "turn the light on at night every day", choose timer_control/tool_sequence_run and hide the Tasmota command details from the user.'
     return 'You are TasmoClaw Lite on Tasmota. Keep answers short and useful. For live device state or device work, call a tool first. Tools: ' + tools + '.' + cap + ' Tool format only: <<<TASMOCLAW_TOOL>>> {"tool":"name","args":{},"reason":"why"} <<<END_TASMOCLAW_TOOL>>>. If calling a tool, output only the block. Use tasmota_cmd_read only for read-only commands like Status, State, Power, Time, Uptime, Mem, Module, Template, GPIO, I2CScan, Sensor, Wifi, IPAddress, TelePeriod, Rule1, Rule2, Rule3, Rules. Actions require approval unless auto approval is enabled.'
   end
 
@@ -643,13 +640,6 @@ class TasmoClawCommon : Driver
       var note = self.text_after_marker(user, ['remember that ', 'remember ', 'note that '])
       if note == '' note = user end
       return {'tool':'memory_append','args':{'name':'memory.md','content':note},'reason':'Append a Lite memory note.'}
-    end
-
-    if self.has_text(s, 'search') && (self.has_text(s, 'web') || self.has_text(s, 'internet') || self.has_text(s, 'brave') || self.has_text(s, 'searx'))
-      var q = self.text_after_marker(user, ['search web for ', 'web search for ', 'search internet for ', 'search for ', 'brave ', 'searxng '])
-      if q == '' q = user end
-      var provider = self.has_text(s, 'brave') ? 'brave' : (self.has_text(s, 'searx') ? 'searxng' : self.cfg.find('search_provider'))
-      return {'tool':'web_search','args':{'query':q,'provider':provider},'reason':'Search through the configured LAN search proxy.'}
     end
 
     if self.has_text(s, 'timer') || self.has_text(s, 'timers')
@@ -1055,7 +1045,6 @@ class TasmoClawCommon : Driver
       'ufs_info':{'approval':false},
       'memory_read':{'approval':false},
       'memory_search':{'approval':false},
-      'web_search':{'approval':false},
       'tool_sequence_run':{'approval':true}
     }
     r['file_list'] = {'approval':false}
@@ -1362,81 +1351,6 @@ class TasmoClawCommon : Driver
     return {'ok':true,'results':results,'count':size(results)}
   end
 
-  def http_get_tcp(url)
-    var s = str(url)
-    if string.find(s, 'http://') != 0
-      return {'ok':false,'error':'Lite web_search supports LAN plain HTTP proxy URLs only','status':-1}
-    end
-    var u = self.http_url_parts(s)
-    if u == nil return {'ok':false,'error':'bad URL','status':-1} end
-    var cl = nil
-    try
-      cl = tcpclient()
-      if cl.connect(u.find('host'), u.find('port')) != true
-        return {'ok':false,'error':'tcp connect failed','status':-1}
-      end
-      var req = 'GET ' + u.find('path') + ' HTTP/1.0\r\nHost: ' + u.find('host') + '\r\nConnection: close\r\n\r\n'
-      cl.write(req)
-      var raw = ''
-      var start = tasmota.millis()
-      var last = start
-      while tasmota.millis() - start < 12000
-        var chunk = cl.read()
-        if chunk != nil && size(chunk) > 0
-          raw += chunk
-          last = tasmota.millis()
-          if size(raw) > 12000 break end
-        elif cl.connected() == false
-          break
-        elif tasmota.millis() - last > 2500
-          break
-        end
-        tasmota.delay(20)
-      end
-      try cl.close() except .. as e0,m0 end
-      try cl.deinit() except .. as e1,m1 end
-      var code = self.http_status_from_raw(raw)
-      var body = self.http_body_from_raw(raw)
-      return {'ok':code >= 200 && code < 300,'status':code,'body':body}
-    except .. as e,m
-      try if cl != nil cl.close() end except .. as e2,m2 end
-      try if cl != nil cl.deinit() end except .. as e3,m3 end
-      return {'ok':false,'error':str(m),'status':-1}
-    end
-  end
-
-  def web_search(args)
-    var q = args.find('query')
-    if q == nil || q == '' q = args.find('q') end
-    if q == nil || q == '' return {'ok':false,'error':'missing query'} end
-    var provider = string.tolower(str(args.find('provider') == nil ? self.cfg.find('search_provider') : args.find('provider')))
-    var base = provider == 'brave' ? self.cfg.find('brave_proxy_url') : self.cfg.find('searxng_url')
-    if base == nil || base == ''
-      return {'ok':false,'error':'Lite web_search needs a LAN proxy URL in config','provider':provider}
-    end
-    var sep = string.find(base, '?') != nil && string.find(base, '?') >= 0 ? '&' : '?'
-    var url = base + sep + 'q=' + webclient.url_encode(str(q))
-    var r = self.http_get_tcp(url)
-    if r.find('ok') != true
-      r['provider'] = provider
-      return r
-    end
-    try
-      var o = json.load(r.find('body'))
-      var arr = provider == 'brave' ? o.find('web').find('results') : o.find('results')
-      var out = []
-      if arr != nil
-        for item:arr
-          out.push({'title':item.find('title'),'url':item.find('url'),'snippet':provider == 'brave' ? item.find('description') : item.find('content')})
-          if size(out) >= 5 break end
-        end
-      end
-      return {'ok':true,'provider':provider,'query':q,'results':out,'count':size(out)}
-    except .. as e,m
-      return {'ok':false,'provider':provider,'error':'search JSON parse failed: '+str(m),'body':self.preview(r.find('body'), 500)}
-    end
-  end
-
   def display_control(args)
     var msg = args.find('text')
     if msg == nil || msg == '' msg = args.find('message') end
@@ -1488,8 +1402,6 @@ class TasmoClawCommon : Driver
       return self.memory_append(args)
     elif name == 'memory_forget'
       return self.memory_forget(args)
-    elif name == 'web_search'
-      return self.web_search(args)
     elif name == 'tool_sequence_run'
       return self.tool_sequence_run(args)
     elif name == 'power_control'

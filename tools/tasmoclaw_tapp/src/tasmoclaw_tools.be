@@ -38,7 +38,7 @@ class TasmoClawTools
       'router_rule_update':{'approval':true,'desc':'Update a router rule'},
       'router_rule_delete':{'approval':true,'desc':'Delete a router rule'},
       'router_emit':{'approval':true,'desc':'Emit an event into the TasmoClaw router and run matching actions'},
-      'web_search':{'approval':false,'desc':'Search the web through configured Brave Search or SearXNG provider'},
+      'web_search':{'approval':false,'desc':'Search the web through direct Brave Search API'},
       'http_bridge_call':{'approval':true,'desc':'Call a local/LAN/cloud HTTP endpoint with GET or POST as an MCP-lite bridge'},
       'image_inspect':{'approval':false,'desc':'Ask an OpenAI-compatible vision endpoint to inspect an image URL'},
       'tasmota_cmd_read':{'approval':false,'desc':'Run clearly read-only Tasmota command, including Rule1/Rule2/Rule3 reads. Rules is mapped to all rule slots.'},
@@ -111,7 +111,7 @@ class TasmoClawTools
       'berry':{'desc':'Berry programs, reusable Berry skills, and script library','tools':['berry_program_read','berry_program_write','berry_program_run','berry_program_explain','berry_check','berry_console','berry_skill_template','berry_skill_create','berry_skill_run','berry_skill_explain','berry_load','berry_compile','script_list','script_read','script_create','script_run','rule_apply','rule_clear','display_message','create_demo_berry']},
       'memory':{'desc':'Local FlashFS memory files for notes, profile, and long-term summaries','tools':['memory_read','memory_search','memory_write','memory_append','memory_forget']},
       'automation':{'desc':'Interval/once scheduler and event router rules','tools':['scheduler_list','scheduler_get','scheduler_add','scheduler_update','scheduler_remove','scheduler_enable','scheduler_disable','scheduler_trigger_now','scheduler_tick','router_rule_list','router_rule_get','router_rule_add','router_rule_update','router_rule_delete','router_emit']},
-      'web':{'desc':'Brave/SearXNG web search, HTTP bridge, and OpenAI-compatible image inspection','tools':['web_search','http_bridge_call','image_inspect']}
+      'web':{'desc':'Direct Brave web search, HTTP bridge, and OpenAI-compatible image inspection','tools':['web_search','http_bridge_call','image_inspect']}
     }
   end
 
@@ -294,7 +294,7 @@ class TasmoClawTools
       out += '- scheduler_*: once/interval schedules emit router events; router_rule_* and router_emit route events to tools or Tasmota commands\n'
     end
     if self.skill_active('web')
-      out += '- web_search: Brave cloud or SearXNG local search; http_bridge_call: MCP-lite HTTP GET/POST; image_inspect: OpenAI-compatible vision over image_url\n'
+      out += '- web_search: direct Brave Search API with conservative result count; http_bridge_call: MCP-lite HTTP GET/POST; image_inspect: OpenAI-compatible vision over image_url\n'
     end
     return out
   end
@@ -1245,8 +1245,14 @@ class TasmoClawTools
     try
       cl = webclient()
       cl.begin(url)
-      try cl.set_timeouts(30000, 12000) except .. as e_to,m_to end
-      try cl.use_http10(true) except .. as e_http,m_http end
+      try cl.set_timeouts(15000, 8000) except .. as e_to,m_to end
+      var use_http10 = true
+      if headers != nil && headers.find('_http10') == false
+        use_http10 = false
+      end
+      if use_http10
+        try cl.use_http10(true) except .. as e_http,m_http end
+      end
       var default_headers = true
       if headers != nil && headers.find('_no_default_headers') == true
         default_headers = false
@@ -1425,65 +1431,56 @@ class TasmoClawTools
       return {'ok':false,'error':'missing query'}
     end
     var cfg = self.store.load_config()
-    var provider = string.tolower(str(self.first_value(args, ['provider'], cfg.find('search_provider'))))
-    if provider == 'brave'
-      var brave_base = cfg.find('brave_proxy_url')
-      var using_proxy = brave_base != nil && brave_base != ''
-      var key = cfg.find('brave_api_key')
-      if !using_proxy && (key == nil || key == '')
-        return {'ok':false,'error':'Missing Brave Search API key in TasmoClaw config'}
-      end
-      if !using_proxy
-        brave_base = 'https://api.search.brave.com/res/v1/web/search'
-      end
-      var bsep = string.find(brave_base, '?') != nil && string.find(brave_base, '?') >= 0 ? '&' : '?'
-      var url = brave_base + bsep + 'q=' + self.url_arg(q) + '&count=5'
-      var headers = using_proxy ? {'_no_default_headers':true} : {'_no_default_headers':true,'X-Subscription-Token':key}
-      var r = self.http_get(url, headers)
-      if r.find('ok') != true
-        return {'ok':false,'provider':'brave','status':r.find('status'),'error':r.find('error') == nil ? 'Brave search HTTP failed' : r.find('error'),'body':tasmoclaw_util.preview(r.find('body'), 700),'url':tasmoclaw_util.safe_url(url)}
-      end
-      var results = []
-      try
-        var o = json.load(r.find('body'))
-        var web = o.find('web')
-        var items = web == nil ? nil : web.find('results')
-        if items != nil
-          for item:items
-            results.push({'title':item.find('title'),'url':item.find('url'),'snippet':item.find('description')})
-            if size(results) >= 5 break end
-          end
-        end
-      except .. as e,m
-        return {'ok':false,'provider':'brave','error':'Brave JSON parse failed: '+str(m),'body':tasmoclaw_util.preview(r.find('body'), 700)}
-      end
-      return {'ok':true,'provider':'brave','query':q,'results':results,'count':size(results)}
+    var key = cfg.find('brave_api_key')
+    if key == nil || key == ''
+      return {'ok':false,'error':'Missing Brave Search API key in TasmoClaw config'}
     end
-
-    var base = cfg.find('searxng_url')
-    if base == nil || base == ''
-      return {'ok':false,'error':'Missing SearXNG URL in TasmoClaw config'}
-    end
-    var sep = string.find(base, '?') != nil && string.find(base, '?') >= 0 ? '&' : '?'
-    var surl = base + sep + 'q=' + self.url_arg(q) + '&format=json'
-    var sr = self.http_get(surl, {'_no_default_headers':true})
-    if sr.find('ok') != true
-      return {'ok':false,'provider':'searxng','status':sr.find('status'),'error':sr.find('error') == nil ? 'SearXNG HTTP failed' : sr.find('error'),'body':tasmoclaw_util.preview(sr.find('body'), 700),'url':tasmoclaw_util.safe_url(surl)}
-    end
-    var sresults = []
+    var mem = {}
     try
-      var so = json.load(sr.find('body'))
-      var sitems = so.find('results')
-      if sitems != nil
-        for si:sitems
-          sresults.push({'title':si.find('title'),'url':si.find('url'),'snippet':si.find('content')})
-          if size(sresults) >= 5 break end
+      tasmota.gc()
+      mem = tasmota.memory()
+      var heap_free = mem.find('heap_free')
+      if heap_free != nil && heap_free < 56
+        return {
+          'ok':false,
+          'provider':'brave',
+          'error':'Not enough free heap for direct Brave HTTPS with stock webclient',
+          'heap_free':heap_free,
+          'hint':'Direct Brave needs more free heap than Full currently has on this board. Lite intentionally has no web search.'
+        }
+      end
+    except .. as e_mem,m_mem
+    end
+    var base = 'https://api.search.brave.com/res/v1/web/search'
+    var url = base + '?q=' + self.url_arg(q) + '&count=1&result_filter=web&safesearch=moderate&search_lang=en&country=us'
+    var headers = {
+      '_no_default_headers':true,
+      '_http10':false,
+      'Accept':'application/json',
+      'Accept-Encoding':'identity',
+      'Connection':'close',
+      'User-Agent':'TasmoClaw/0.1',
+      'X-Subscription-Token':key
+    }
+    var r = self.http_get(url, headers)
+    if r.find('ok') != true
+      return {'ok':false,'provider':'brave','status':r.find('status'),'error':r.find('error') == nil ? 'Brave search HTTP failed' : r.find('error'),'body':tasmoclaw_util.preview(r.find('body'), 700),'url':tasmoclaw_util.safe_url(url)}
+    end
+    var results = []
+    try
+      var o = json.load(r.find('body'))
+      var web = o.find('web')
+      var items = web == nil ? nil : web.find('results')
+      if items != nil
+        for item:items
+          results.push({'title':item.find('title'),'url':item.find('url'),'snippet':item.find('description')})
+          if size(results) >= 1 break end
         end
       end
-    except .. as e2,m2
-      return {'ok':false,'provider':'searxng','error':'SearXNG JSON parse failed: '+str(m2),'body':tasmoclaw_util.preview(sr.find('body'), 700)}
+    except .. as e,m
+      return {'ok':false,'provider':'brave','error':'Brave JSON parse failed: '+str(m),'body':tasmoclaw_util.preview(r.find('body'), 700)}
     end
-    return {'ok':true,'provider':'searxng','query':q,'results':sresults,'count':size(sresults)}
+    return {'ok':true,'provider':'brave','query':q,'results':results,'count':size(results)}
   end
 
   def http_bridge_call(args)

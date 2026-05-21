@@ -256,10 +256,7 @@ class TasmoClawDriver : Driver
     webserver.content_send('<label>API URL</label><input id="api_url" placeholder="https://api.deepseek.com/chat/completions or http://mac-ip:8080/v1/chat/completions">')
     webserver.content_send('<label>Model</label><input id="model" list="model_suggestions" placeholder="deepseek-v4-flash or local model id"><datalist id="model_suggestions"><option value="deepseek-v4-flash"><option value="deepseek-v4-pro"><option value="local"></datalist>')
     webserver.content_send('<label>API Key</label><input id="api_key" type="password">')
-    webserver.content_send('<label>Search provider</label><select id="search_provider"><option value="searxng">SearXNG local/LAN</option><option value="brave">Brave Search cloud</option></select>')
     webserver.content_send('<label>Brave Search API key</label><input id="brave_api_key" type="password" placeholder="Stored locally; never shown back">')
-    webserver.content_send('<label>Brave proxy URL</label><input id="brave_proxy_url" placeholder="optional: http://lan-host:8767/res/v1/web/search">')
-    webserver.content_send('<label>SearXNG URL</label><input id="searxng_url" placeholder="http://mac-lan-ip:8888/search">')
     webserver.content_send('<label>Vision API URL</label><input id="vision_api_url" placeholder="optional OpenAI-compatible vision endpoint">')
     webserver.content_send('<label>Vision model</label><input id="vision_model" placeholder="optional vision model id">')
     webserver.content_send('<label>Vision API key</label><input id="vision_api_key" type="password" placeholder="optional">')
@@ -277,7 +274,7 @@ class TasmoClawDriver : Driver
     webserver.content_send('<div id="msg" class="msg"></div>')
     webserver.content_send('</div>')
 
-    webserver.content_send('<script>const ids=["provider","api_url","model","api_key","search_provider","brave_api_key","brave_proxy_url","searxng_url","vision_api_url","vision_model","vision_api_key","temperature","max_tokens","thinking","reasoning_effort","max_tool_iterations","history_limit","prompt_mode","context_byte_limit","system_extra"];const el=id=>document.getElementById(id);const note=t=>el("msg").textContent=t;function providerChanged(){if(el("provider").value=="local_openai"){el("api_key").placeholder="optional for local servers";el("thinking").value="omit";}else{el("api_key").placeholder="DeepSeek API key";}}function setCfg(c){ids.forEach(id=>{if(c[id]!=null)el(id).value=c[id];});el("auto_approve_tools").checked=!!c.auto_approve_tools;providerChanged();}function getCfg(){fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>setCfg(x.config||{})).catch(e=>note(String(e)));}function body(){let c={};ids.forEach(id=>c[id]=el(id).value);c.temperature=parseFloat(c.temperature);c.max_tokens=parseInt(c.max_tokens);c.max_tool_iterations=parseInt(c.max_tool_iterations);c.history_limit=parseInt(c.history_limit);c.context_byte_limit=parseInt(c.context_byte_limit);c.auto_approve_tools=el("auto_approve_tools").checked;return c;}function testText(x){if(x.ok)return (x.content||"OK")+" via "+(x.transport||"?")+" HTTP "+(x.status||"?");let p=[x.error||"Test failed"];if(x.transport)p.push("transport "+x.transport);if(x.status!=null)p.push("status "+x.status);if(x.attempts)p.push("attempt "+(x.attempt||"?")+"/"+x.attempts);if(x.hint)p.push(x.hint);if(x.body)p.push("body: "+x.body);if(x.fallback_hint)p.push(x.fallback_hint);return p.join(" | ");}el("provider").onchange=providerChanged;el("save").onclick=()=>{note("Saving...");fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>{note(x.ok?"Saved":(x.error||"Save failed"));if(x.config)setCfg(x.config);}).catch(e=>note(String(e)));};el("test").onclick=()=>{note("Testing...");fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>note(testText(x))).catch(e=>note(String(e)));};getCfg();</script>')
+    webserver.content_send('<script>const ids=["provider","api_url","model","api_key","brave_api_key","vision_api_url","vision_model","vision_api_key","temperature","max_tokens","thinking","reasoning_effort","max_tool_iterations","history_limit","prompt_mode","context_byte_limit","system_extra"];const el=id=>document.getElementById(id);const note=t=>el("msg").textContent=t;function providerChanged(){if(el("provider").value=="local_openai"){el("api_key").placeholder="optional for local servers";el("thinking").value="omit";}else{el("api_key").placeholder="DeepSeek API key";}}function setCfg(c){ids.forEach(id=>{if(c[id]!=null)el(id).value=c[id];});el("auto_approve_tools").checked=!!c.auto_approve_tools;providerChanged();}function getCfg(){fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>setCfg(x.config||{})).catch(e=>note(String(e)));}function body(){let c={};ids.forEach(id=>c[id]=el(id).value);c.temperature=parseFloat(c.temperature);c.max_tokens=parseInt(c.max_tokens);c.max_tool_iterations=parseInt(c.max_tool_iterations);c.history_limit=parseInt(c.history_limit);c.context_byte_limit=parseInt(c.context_byte_limit);c.auto_approve_tools=el("auto_approve_tools").checked;return c;}function testText(x){if(x.ok)return (x.content||"OK")+" via "+(x.transport||"?")+" HTTP "+(x.status||"?");let p=[x.error||"Test failed"];if(x.transport)p.push("transport "+x.transport);if(x.status!=null)p.push("status "+x.status);if(x.attempts)p.push("attempt "+(x.attempt||"?")+"/"+x.attempts);if(x.hint)p.push(x.hint);if(x.body)p.push("body: "+x.body);if(x.fallback_hint)p.push(x.fallback_hint);return p.join(" | ");}el("provider").onchange=providerChanged;el("save").onclick=()=>{note("Saving...");fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>{note(x.ok?"Saved":(x.error||"Save failed"));if(x.config)setCfg(x.config);}).catch(e=>note(String(e)));};el("test").onclick=()=>{note("Testing...");fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>note(testText(x))).catch(e=>note(String(e)));};getCfg();</script>')
 
     webserver.content_stop()
   end
@@ -327,7 +324,6 @@ class TasmoClawDriver : Driver
       'api_url':self.cfg['api_url'],
       'transport':'stock',
       'tested_models':[],
-      'search_provider':self.cfg.find('search_provider') == nil ? 'searxng' : self.cfg['search_provider'],
       'active_skills':self.tools.active_skills(),
       'heap':tasmota.memory(),
       'wifi':tasmota.wifi(),
@@ -345,11 +341,11 @@ class TasmoClawDriver : Driver
       cfg = {}
     end
 
+    var clean = {}
     for k:defaults.keys()
-      if cfg.find(k) == nil
-        cfg[k] = defaults[k]
-      end
+      clean[k] = cfg.find(k) == nil ? defaults[k] : cfg[k]
     end
+    cfg = clean
 
     if cfg['provider'] != 'local_openai'
       cfg['provider'] = 'deepseek'
@@ -412,20 +408,8 @@ class TasmoClawDriver : Driver
       cfg['system_extra'] = ''
     end
 
-    if cfg['search_provider'] != 'brave'
-      cfg['search_provider'] = 'searxng'
-    end
-
     if cfg['brave_api_key'] == nil
       cfg['brave_api_key'] = ''
-    end
-
-    if cfg['brave_proxy_url'] == nil
-      cfg['brave_proxy_url'] = ''
-    end
-
-    if cfg['searxng_url'] == nil || cfg['searxng_url'] == ''
-      cfg['searxng_url'] = defaults['searxng_url']
     end
 
     if cfg['vision_api_url'] == nil
@@ -2058,7 +2042,7 @@ class TasmoClawDriver : Driver
       'seriallog','event','backlog','skill','tool','timer','timers','pulsetime',
       'ruletimer','filesystem_control','network','hostname','ntp','timezone'
       ,'webcolor','palette','theme','lvgl','library','module probe','search',
-      'web search','brave','searx','searxng','memory','remember','schedule',
+      'web search','brave','memory','remember','schedule',
       'scheduler','router','route','http','webhook','mcp','bridge','image',
       'inspect image','vision','script'
     ]
@@ -2517,23 +2501,13 @@ class TasmoClawDriver : Driver
     var says_search = string.find(u, 'search')
     var says_web = string.find(u, 'web')
     var says_brave = string.find(u, 'brave')
-    var says_searx = string.find(u, 'searx')
-    if (says_search != nil && says_search >= 0 && (says_web != nil || says_brave != nil || says_searx != nil)) || (says_brave != nil && says_brave >= 0) || (says_searx != nil && says_searx >= 0)
-      var q = self.text_after_marker(user, ['search web for ', 'web search for ', 'search for ', 'brave search for ', 'searxng search for ', 'searx search for '])
+    if (says_search != nil && says_search >= 0 && (says_web != nil || says_brave != nil)) || (says_brave != nil && says_brave >= 0)
+      var q = self.text_after_marker(user, ['search web for ', 'web search for ', 'search for ', 'brave search for ', 'brave '])
       if q == ''
         q = user
       end
-      var provider = ''
-      if says_brave != nil && says_brave >= 0
-        provider = 'brave'
-      elif says_searx != nil && says_searx >= 0
-        provider = 'searxng'
-      end
       var args_search = {'query':q}
-      if provider != ''
-        args_search['provider'] = provider
-      end
-      return {'tool':'web_search','args':args_search,'reason':'Search the web through the configured provider.'}
+      return {'tool':'web_search','args':args_search,'reason':'Search the web through direct Brave Search API.'}
     end
 
     var says_schedule = string.find(u, 'schedule')
@@ -3437,6 +3411,13 @@ def start()
       global.tasmoclaw_driver.stop()
     end
   except .. as e0,m0
+  end
+
+  try
+    if global.tasmoclaw_common_driver
+      global.tasmoclaw_common_driver.unload()
+    end
+  except .. as e_lite,m_lite
   end
 
   _driver = TasmoClawDriver()
