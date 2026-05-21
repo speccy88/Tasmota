@@ -2,14 +2,13 @@
 
 TasmoClaw is a mostly Berry/TAPP Tasmota Application packaged as one locally generated `.tapp` file. It adds a small web chat page to a Tasmota ESP32 device, talks to DeepSeek or local OpenAI-compatible chat servers, and exposes tools for device status, sensors, power, UFS/SD, FlashFS files, Berry programs/scripts, memory, scheduler rules, event routing, web search, HTTP bridge calls, image URL inspection, display/LVGL, audio, MQTT, timers, rules, and command building.
 
-TasmoClaw does not use MCP, streaming, Telegram, or instant messaging. It does include an MCP-lite HTTP bridge tool: the device can call a LAN/cloud HTTP endpoint with GET or POST and feed the response back into the agent. The portable default HTTPS path is Tasmota Berry `webclient()` using BearSSL. On ESP32 builds where that path fails, TasmoClaw can use the optional native HTTPS helper described below.
+TasmoClaw does not use MCP, streaming, Telegram, or instant messaging. It does include an MCP-lite HTTP bridge tool: the device can call a LAN/cloud HTTP endpoint with GET or POST and feed the response back into the agent. The HTTPS path is stock Tasmota Berry `webclient()` using BearSSL. Local OpenAI-compatible servers and LAN search proxies can be reached over plain HTTP with Berry `tcpclient`.
 
 ## Requirements
 
 - Tasmota ESP32 build with Berry, webserver, filesystem, and TAPP support.
 - Network and TLS support for `https://api.deepseek.com/chat/completions`.
 - Recommended for this board: PSRAM enabled, `USE_SDCARD`, and `USE_SHT3X`.
-- Optional for this custom RLCD build only: `USE_TASMOCLAW_HTTPS` if Berry `webclient()` HTTPS still fails and you want the native ESP-IDF fallback.
 - A DeepSeek API key.
 - Optional: Brave Search API key for cloud web search.
 - Optional: SearXNG on a LAN host for local/private web search.
@@ -89,7 +88,7 @@ Br load("/tasmoclaw_lite.tapp")
 
 If the device already has a boot rule such as `Rule2 ON System#Boot DO Br load("/tasmoclaw.tapp") ENDON`, either change that rule to load `/tasmoclaw_lite.tapp`, or upload Lite under the filename `/tasmoclaw.tapp` so the existing boot rule loads the smaller app.
 
-Lite is built from shared source modules in `src/`. It intentionally does not import the full app's large command catalog, native bridge helpers, SD helpers, or Berry programming tools.
+Lite is built from shared source modules in `src/`. It intentionally does not import the full app's large command catalog or Berry programming tools.
 
 Lite stores its configuration with Tasmota's documented Berry `persist` module (`persist.find`, `persist.setmember`, `persist.save(true)`) instead of ad-hoc JSON files. This keeps the small build compatible with stock ESP32 firmware where full file-backed storage may be too heavy or unavailable.
 
@@ -117,17 +116,13 @@ Open `/tasmoclaw/config` and set:
 - Model default: `deepseek-v4-flash`
 - Model optional: `deepseek-v4-pro`
 - API key: your DeepSeek key. Local servers usually do not need a key; leaving it blank clears the saved key for local mode.
-- HTTPS transport:
-  - `webclient / BearSSL`: default and portable for normal Tasmota builds.
-  - `auto`: try BearSSL first, then the optional native helper only if no HTTP response is received.
-  - `native ESP-IDF bridge`: force the optional mbedTLS helper.
 - Temperature, max tokens, thinking mode, reasoning effort, tool iteration limit, history limit, prompt mode, context byte limit, and optional extra system instructions.
 
 TasmoClaw defaults to `prompt mode: compact` and a bounded context byte limit so normal ESP32 builds can use the portable BearSSL `webclient()` path. Use `prompt mode: full` only on boards with enough free heap/PSRAM, or when debugging tool-selection behavior.
 
 The config page loads `/tasmoclaw/api/config`, saves with `POST /tasmoclaw/api/config`, and tests the current API settings with `POST /tasmoclaw/api/test`. The API key is masked as `********` when read back. Saving an empty key or `********` preserves the existing key; entering a new non-empty value replaces it.
 
-When `Test API` succeeds, TasmoClaw records the current provider, API URL, model, and transport as a known-good model profile. The main chat page then shows those tested profiles in a small model switcher, so you can jump between DeepSeek and local OpenAI-compatible servers without reopening the config page. Untested models are not listed there.
+When `Test API` succeeds, TasmoClaw records the current provider, API URL, and model as a known-good model profile. The main chat page then shows those tested profiles in a small model switcher, so you can jump between DeepSeek and local OpenAI-compatible servers without reopening the config page. Untested models are not listed there.
 
 For a local OpenAI-compatible server, use the server's LAN-reachable URL. From a Mac running MLX-LM on the same network, an example is:
 
@@ -295,15 +290,16 @@ Observed working prompts on the test board:
 - `Read the current power state.` called `power_read` and returned `POWER1=ON, POWER2=ON`.
 - `List the current Tasmota rules.` called `rule_control` and returned Rule1/Rule2/Rule3.
 - `List the files on flash.` called `file_list` and returned FlashFS files.
+- `read that messy_full file back, not display` called `file_read` for `flash:/messy_full.txt`; display negation is handled by the direct router.
+- `i want the light to turn on at night from monday to sunday` prepares a pending Timer1 sunset sequence and does not apply it until approved.
 - `Read all sensor values, then read power state...` worked by choosing the aggregate `device_read` tool.
 
 Observed failures and cautions:
 
 - One explicit `Status 0` command-read test hit `HTTP -11` read timeout through the local MLX-LM/webclient path.
-- `Read flash:/display.ini...` was misclassified as `display_control` and sent the prompt text to `DisplayText` instead of using `file_read`.
-- Qwen may ignore exact-output instructions or select surprising tools. Keep approval prompts enabled for actions when testing local models.
+- Qwen may ignore exact-output instructions or select surprising tools for requests outside the deterministic routers. Keep approval prompts enabled for actions when testing local models.
 
-Recommendation: use Qwen/MLX-LM for read-only status, sensor, power, rules, and file-list demos. Use DeepSeek for broader tool use, file reads/writes, Berry programming, rule changes, display/audio actions, or any unattended run until TasmoClaw has a stricter local tool-router/validator layer.
+Recommendation: use Qwen/MLX-LM for local status, sensor, power, rules, FlashFS files, LAN search, and Lite direct-intent demos. Use DeepSeek for broader tool use, Berry programming, complex rule changes, display/audio actions, or any unattended run.
 
 TasmoClaw defaults to the standard Tasmota Berry `webclient()` HTTPS path. This is the route that should make the `.tapp` usable by regular Tasmota users without firmware changes.
 
@@ -324,40 +320,14 @@ Expected interpretation:
 - `r=200` from `https://trmnl.com/api/display` with a JSON error body also means TLS worked.
 - A negative code or no body means the failure happened before a real HTTP response, usually in DNS, Wi-Fi, timeout, heap, TLS, certificate, cipher, or the webclient build.
 
-On the ESP32-S3 RLCD build used for TasmoClaw, Berry `webclient()` HTTPS failed before receiving a real HTTP response, while the same URLs worked through a native ESP-IDF client. TasmoClaw keeps that native helper separate and optional so the main `.tapp` can remain portable.
+TasmoClaw no longer carries a custom ESP-IDF/mbedTLS HTTPS bridge. If stock Berry `webclient()` cannot complete an HTTPS request on a given firmware build, use compact prompt mode, reduce the context byte limit, or point TasmoClaw at a LAN plain-HTTP bridge/local model server.
 
-The optional helper is named `idf_https_post(url, headers_json, body)`.
+Expected interpretation for the Berry `webclient()` diagnostic above:
 
-The helper is enabled in firmware with `USE_TASMOCLAW_HTTPS`; this checkout keeps it in a separate opt-in PlatformIO environment named `tasmota32s3-lvgl-tasmoclaw-native`. It exposes HTTPS POST to Berry and uses ESP-IDF/Tasmota-native TLS pieces as a fallback for builds where the Berry webclient path fails:
-
-- `esp_http_client`
-- `esp_tls`
-- mbedTLS
-- `esp_crt_bundle`
-
-The `.tapp` still contains the TasmoClaw app. The native bridge is only a fallback HTTPS transport helper. It is not required for normal Tasmota builds. In config, leave `HTTPS transport` at `webclient / BearSSL` unless your firmware shows the failing negative-code behavior; use `auto` or `native` only for those builds.
-
-Diagnostic from the Berry console:
-
-```berry
-var headers = '{"Content-Type":"application/json","Accept":"application/json","Connection":"close","User-Agent":"TasmoClaw/0.1"}'
-var body = '{"test":true}'
-var r = idf_https_post("https://httpbin.org/post", headers, body)
-print(r)
-```
-
-Diagnostic command:
-
-```text
-TasmoClawHttpsTest
-```
-
-Expected interpretation:
-
-- HTTP 200, 400, 401, or 405 from either transport means HTTPS transport is working and the remote server answered.
+- HTTP 200, 400, 401, or 405 means HTTPS transport is working and the remote server answered.
 - HTTP 401 from DeepSeek means the API key is missing or invalid.
 - HTTP 400 from DeepSeek usually means payload or model mismatch.
-- A transport error with `stage`, `esp_err`, or `error` means TLS, DNS, network, certificate bundle, or native bridge setup failed.
+- A negative code or no body means the failure happened before a real HTTP response, usually in DNS, Wi-Fi, timeout, heap, TLS, certificate, cipher, or the webclient build.
 
 ## PSRAM, SD Card, and SHTC3 on ESP32-S3-RLCD-4.2
 
@@ -369,25 +339,24 @@ The board SD slot is wired as 1-bit SDIO:
 - `GPIO38`: SDIO CLK
 - `GPIO39`: SDIO D0
 
-With `USE_SDCARD` and those template functions, `UfsType` should report `[1,3]`: SD card plus FlashFS. On upstream firmware, TasmoClaw first uses standard Tasmota UFS commands such as `UfsList` plus Berry `open()` for explicit `flash:/...` and `sd:/...` paths. Optional native helpers named `tasmo_ufs_list`, `tasmo_ufs_read`, and `tasmo_ufs_write` are used only when the firmware provides them; they are not required for normal upstream compatibility.
+With `USE_SDCARD` and those template functions, `UfsType` should report `[1,3]`: SD card plus FlashFS. TasmoClaw uses standard Tasmota UFS commands such as `UfsList` plus Berry `open()` for explicit `flash:/...` and `sd:/...` paths where stock firmware allows them.
 
 Filesystem paths can be made explicit with prefixes:
 
-- `sd:/memory.md` reads or writes the SD card.
+- `sd:/` selects the SD card for stock UFS actions such as status/list/delete/rename/run; Berry content read/write is not available on stock firmware.
 - `flash:/autoexec.be` reads or writes internal FlashFS.
-- `/file.txt` keeps Tasmota's default UFS behavior, which is SD when SD is mounted.
+- `/file.txt` keeps Tasmota's default UFS behavior and is intentionally avoided by TasmoClaw when a prompt can be mapped to `flash:/...` or `sd:/...`.
 
 The Tasmota Manage File System page has a FlashFS/SDCard selector and Copy/Move buttons for regular files when both filesystems are mounted. Audio playback uses the same explicit syntax, for example `I2SPlay sd:/music/file.mp3` or `I2SPlay flash:/startup.wav`.
 
 The onboard temperature/humidity sensor is SHTC3 on I2C address `0x70`. Enable `USE_SHT3X`; `Status 8` should include `SHTC3` temperature, humidity, and dew point. TasmoClaw's `sensor_read` and `device_read` tools expose those readings.
 
-SD/UFS diagnostic from Berry when native helpers are available:
+SD/UFS diagnostic from the Tasmota console:
 
-```berry
-print(tasmo_ufs_list("sd:/"))
-print(tasmo_ufs_write("sd:/memory.md", "# Memory\nTasmoClaw can write to SD.\n"))
-print(tasmo_ufs_read("sd:/memory.md", 2048))
-print(tasmo_ufs_list("flash:/"))
+```text
+UfsType
+Ufs
+UfsList
 ```
 
 ## Example prompts
@@ -406,8 +375,8 @@ print(tasmo_ufs_list("flash:/"))
 - Create a Hello World file in Berry in the file system.
 - Run the Berry hello_world program.
 - Explain the Berry hello_world program.
-- Create memory.md on the SD card with the text: # Memory
-- Read memory.md.
+- Create flash:/memory.md with the text: # Memory
+- Read flash:/memory.md.
 - Create a Tasmota Rule1 that refreshes the display every 5 minutes.
 - Write a Berry file that displays heap, RSSI, and time on the screen.
 
@@ -571,24 +540,24 @@ Expected response:
 {"HelloWorld":"ok"}
 ```
 
-## SD Markdown Memory Files
+## FlashFS Markdown Memory Files
 
-TasmoClaw can write and read markdown files on the mounted SD card through the native UFS bridge. Suggested files include:
+TasmoClaw can write and read markdown files on filesystems that stock Berry can open. Suggested files include:
 
-- `/memory.md`
-- `/agent.md`
-- `/soul.md`
-- `/user.md`
+- `flash:/memory.md`
+- `flash:/agent.md`
+- `flash:/soul.md`
+- `flash:/user.md`
 
-Use prompts such as `Create memory.md on the SD card with the text ...` and `Read memory.md`.
+Use prompts such as `Create flash:/memory.md with the text ...` and `Read flash:/memory.md`. On stock firmware, SD-card content should be uploaded/downloaded through the Tasmota web file manager or host-side `/ufsd` and `/ufsu` endpoints.
 
 ## Known limitations
 
-- No streaming, MCP, Telegram/IM, or local proxy.
-- DeepSeek Chat Completions only.
-- HTTPS defaults to Berry `webclient()`/BearSSL. Use `auto` or `native` only on builds where BearSSL fails before getting an HTTP response.
+- No streaming, MCP, Telegram/IM, or required local proxy.
+- DeepSeek or OpenAI-compatible Chat Completions only.
+- HTTPS uses Berry `webclient()`/BearSSL. Plain HTTP local model and search endpoints use Berry `tcpclient`.
 - PSRAM must be enabled for comfortable HTTPS/JSON operation on this board.
-- SD markdown access requires a mounted SD card and the SDIO template pins above.
+- SD UFS listing requires a mounted SD card and the SDIO template pins above; SD file-content read/write uses the stock web file manager or host endpoints.
 - SHTC3 readings require `USE_SHT3X` and a working I2C bus.
 - HTTPS response bodies are capped to keep memory use reasonable on-device.
 - API key is stored on-device.
@@ -600,11 +569,10 @@ Use prompts such as `Create memory.md on the SD card with the text ...` and `Rea
 
 - `Missing DeepSeek API key`: open `/tasmoclaw/config` and save a key.
 - `webclient unavailable`: the firmware build may not include webclient support.
-- `ESP-IDF HTTPS bridge idf_https_post is not available`: native transport was selected without firmware support; use `webclient / BearSSL` or rebuild firmware with `USE_TASMOCLAW_HTTPS`.
 - HTTP 401/403: check the API key.
 - HTTP 404: check the API URL.
-- HTTPS or request failures: run `TasmoClawHttpsTest`. If BearSSL returns HTTP 401 from DeepSeek or HTTP 200 from TRMNL, the portable transport works. If BearSSL returns a negative code but native succeeds, use `auto`/`native` only for that custom build.
-- Detailed debug logs: run `WebLog 4` for web console logs or `SerialLog 4` for serial logs, then reproduce the issue. TasmoClaw emits `TCL:` debug lines for chat loop steps, tool selection, storage fallbacks, webclient/native HTTPS start/result/failure, HTTP status, body byte counts, retry attempts, and native TLS stages. API keys and Authorization headers are not logged.
+- HTTPS or request failures: run the Berry `webclient()` diagnostic above, then reduce prompt size or use a LAN plain-HTTP local model/proxy if stock HTTPS cannot complete the request.
+- Detailed debug logs: run `WebLog 4` for web console logs or `SerialLog 4` for serial logs, then reproduce the issue. TasmoClaw emits `TCL:` debug lines for chat loop steps, tool selection, storage fallbacks, webclient/tcpclient start/result/failure, HTTP status, body byte counts, and retry attempts. API keys and Authorization headers are not logged.
 - `HTTP -8 from Tasmota webclient before receiving a server response (too little RAM)`: BearSSL can usually still work; the request is too large for available heap. Keep `prompt mode` on `compact`, lower `context byte limit` to around `3500`, reduce `history limit`, clear chat history, and retry. `TCL: llm call start ... payload_bytes=...` in `WebLog 4` shows the request size.
 - `malloc failed`: check `Status 0`; `PsrMax` should be `8192` on the Waveshare board and `PsrFree` should be non-zero.
 - SD not visible: check `UfsType`, `Ufs`, and the SDIO template pins. `UfsType` should include `1`.
@@ -625,19 +593,20 @@ Use prompts such as `Create memory.md on the SD card with the text ...` and `Rea
 8. Ask TasmoClaw to write a small file and confirm approval is required.
 9. Ask TasmoClaw to create the demo Berry command file and confirm the returned path.
 10. Ask TasmoClaw to create, read, run, and explain the Berry hello-world program; `HelloWorld` should return `{"HelloWorld":"ok"}` after it is run.
-11. Ask TasmoClaw to create and read `memory.md` on the SD card.
+11. Ask TasmoClaw to list the SD card root, then create/read/delete a small FlashFS text file.
 12. Ask `Read sensors and power`; confirm `SHTC3`, `POWER1`, and `POWER2` appear.
 13. Ask `Play a happy birthday RTTTL song`; confirm approval appears, then approve and listen for `I2SRtttl`.
 14. Ask `Set speaker volume to 20`; confirm it maps to `I2SGain 20`.
-15. Run `TasmoClaw`, `TasmoClawReset`, `TasmoClawTest`, and `TasmoClawHttpsTest` commands.
+15. Run `TasmoClaw`, `TasmoClawReset`, and `TasmoClawTest` commands.
 
 Recent live smoke results on the ESP32-S3-RLCD-4.2 test board:
 
 - `PsrMax`: `8192`, `PsrFree`: non-zero.
 - `UfsType`: `[1,3]` after SDIO template setup.
 - `Status 8`: includes `SHTC3`.
-- `TasmoClawHttpsTest`: native transport reached DeepSeek; BearSSL webclient still failed on this custom RLCD firmware at the time of testing.
-- SD markdown write/read: `/memory.md` and `/agent.md` succeeded.
+- HTTPS: stock Berry `webclient()` is the only on-device HTTPS path; local OpenAI-compatible HTTP endpoints use `tcpclient`.
+- SD root listing works through stock `UfsList`; SD file-content read/write from Berry is intentionally blocked with a stock-firmware limitation message.
+- FlashFS text write/read/delete works through Berry `open()` with `flash:/...` paths.
 - Berry program write/read/run/explain: `/tasmoclaw/berry/hello_world.be` succeeded.
 
 ## Local Verification

@@ -27,12 +27,12 @@ Current port status:
 | Speaker path | In progress | GPIO46 amplifier control and TDM I2S playback setup are implemented; `I2SPlay` starts and WAV decode selection is available. Audible-output validation is still pending. |
 | Microphone/recording | In progress | WAV recording support and timed `I2SRec <seconds>,<path>` parsing are implemented and build successfully. Hardware validation of captured audio level/quality is still pending. |
 | Filesystem audio files | Pending validation | The file manager can switch between FlashFS and SDCard and copy/move files between them. `I2SPlay` accepts explicit `sd:/file.mp3` and `flash:/file.mp3` paths; plain `/file.mp3` keeps the current UFS behavior. |
-| TRMNL dashboard display | Working direct HTTPS, bridge optional | `lv.trmnl_show_png(path, rotation)` renders 1-bit TRMNL frames through LVGL. `tools/rlcd_trmnl/autoexec.be` starts 5 seconds after boot, fetches indefinitely, uses TRMNL `refresh_rate` timing, and keeps only the current frame on the filesystem. The script now prefers the native `idf_https_get()` and `idf_https_download()` helpers for TRMNL API/image HTTPS, with `tools/rlcd_trmnl/trmnl_bridge.py` kept as a fallback for firmware builds without the native HTTPS helper. |
-| TasmoClaw AI tools | Working on test board | `tools/tasmoclaw_tapp/` builds a Berry/TAPP web chat application for this board. It talks directly to DeepSeek, uses a small native HTTPS/UFS bridge for reliable ESP32-S3 HTTPS and SD access, and exposes guarded tools for reading sensors, power, rules, SD files, Berry programs, and applying approved Tasmota changes. |
+| TRMNL dashboard display | Working with stock webclient or bridge | `lv.trmnl_show_png(path, rotation)` renders 1-bit TRMNL frames through LVGL. `tools/rlcd_trmnl/autoexec.be` starts 5 seconds after boot, fetches indefinitely, uses TRMNL `refresh_rate` timing, and keeps only the current frame on the filesystem. The script uses Tasmota Berry `webclient()` directly; `tools/rlcd_trmnl/trmnl_bridge.py` remains available when credentials or HTTPS fetches should live off-device. |
+| TasmoClaw AI tools | Working on test board | `tools/tasmoclaw_tapp/` builds a Berry/TAPP web chat application for this board. It talks to DeepSeek through stock Tasmota `webclient()`, talks to local OpenAI-compatible HTTP servers through `tcpclient`, and exposes guarded tools for reading sensors, power, rules, files, Berry programs, and applying approved Tasmota changes. |
 
 ### TasmoClaw AI tool app
 
-TasmoClaw is an experimental Tasmota Application for the ESP32-S3-RLCD-4.2 build. The app itself is Berry code packaged as a local `.tapp`; the firmware side only adds a small optional native helper for HTTPS POST and SD/UFS access. It is not a proxy, MCP bridge, streaming client, Telegram bot, or external local service.
+TasmoClaw is an experimental Tasmota Application for the ESP32-S3-RLCD-4.2 build. The app itself is Berry code packaged as a local `.tapp`; there is no extra ESP-IDF or mbedTLS helper in this branch. It is not a proxy, MCP bridge, streaming client, Telegram bot, or external local service.
 
 At runtime, upload one of the generated TasmoClaw `.tapp` files, load it, then open:
 
@@ -48,20 +48,18 @@ http://<device-ip>/tasmoclaw/config
 
 TasmoClaw works by giving the model a compact registry of device tools. For requests that depend on live device state, filesystem contents, rules, sensors, relays, or Berry files, the model must call a tool first. TasmoClaw executes one tool at a time, feeds the result back to the model, and only then asks for a human-friendly answer. Write operations and unsafe Tasmota commands create a pending approval unless auto-approval is enabled in the config page.
 
-The portable HTTPS path is Tasmota Berry `webclient()`/BearSSL. TasmoClaw defaults to compact prompt mode with a bounded context byte limit so regular ESP32 boards without PSRAM are less likely to hit webclient `HTTP -8` (“too little RAM”) during DeepSeek POST requests. The optional native HTTPS helper remains separate and should only be used for custom firmware builds that need it.
+The HTTPS path is stock Tasmota Berry `webclient()`/BearSSL. TasmoClaw defaults to compact prompt mode with a bounded context byte limit so regular ESP32 boards without PSRAM are less likely to hit webclient `HTTP -8` ("too little RAM") during DeepSeek POST requests. Local OpenAI-compatible servers such as Ollama, MLX-LM, and LAN search proxies can be reached over plain HTTP with Berry `tcpclient`.
 
-On classic ESP32 modules without PSRAM, the full `.tapp` is too large to import. Its autoexec now checks for PSRAM and returns before loading the heavy modules, so Tasmota remains bootable and you can delete or replace the file from the normal file manager. For stock firmware from the Tasmota web installer, use `dist/tasmoclaw_lite.tapp`, which keeps the nicer UI plus selected safe tools while avoiding the full app's broad command catalog and native helpers. TasmoClaw debug call sites remain in the artifacts and only emit logs when `WebLog 4` or `SerialLog 4` is enabled.
+On classic ESP32 modules without PSRAM, the full `.tapp` is too large to import. Its autoexec now checks for PSRAM and returns before loading the heavy modules, so Tasmota remains bootable and you can delete or replace the file from the normal file manager. For stock firmware from the Tasmota web installer, use `dist/tasmoclaw_lite.tapp`, which keeps the nicer UI plus selected safe tools while avoiding the full app's broad command catalog. TasmoClaw debug call sites remain in the artifacts and only emit logs when `WebLog 4` or `SerialLog 4` is enabled.
 
 Important pieces:
 
 - `tools/tasmoclaw_tapp/build_tapp.py` generates Lite and Full `.tapp` variants by default; this side-project branch keeps the generated artifacts available for download.
 - The same builder exports Tasmota-Extensions raw folders for `TasmoClaw Lite` and `TasmoClaw Full`, including manifests and unloadable extension entrypoints suitable for an upstream `tasmota/Tasmota-Extensions` PR.
-- `tasmota/tasmota_xdrv_driver/xdrv_99_tasmoclaw_https.ino` exposes `idf_https_post()`, `idf_https_get()`, `idf_https_download()`, and native SD/UFS helpers to Berry when `USE_TASMOCLAW_HTTPS` is enabled.
-- The Tasmota file manager now has a FlashFS/SDCard selector, plus Copy/Move actions for regular files when both filesystems are mounted. Native/TasmoClaw filesystem paths can use `sd:/...` or `flash:/...` to avoid ambiguity.
+- The Tasmota file manager now has a FlashFS/SDCard selector, plus Copy/Move actions for regular files when both filesystems are mounted. TasmoClaw filesystem paths can use `sd:/...` or `flash:/...` to avoid ambiguity where stock Berry filesystem access allows it.
 - The default DeepSeek endpoint is `https://api.deepseek.com/chat/completions`, with `deepseek-v4-flash` as the default model and `deepseek-v4-pro` as the heavier option. The config page also supports `Local OpenAI-compatible` endpoints such as MLX-LM on `http://<mac-lan-ip>:8080/v1/chat/completions` or Ollama on `http://<mac-lan-ip>:11434/v1/chat/completions`; local model names are free-form.
 - Successful `Test API` runs are remembered as known-good model profiles. The TasmoClaw main page exposes those tested profiles in a model switcher, so only endpoints/models that have actually answered are offered for quick switching.
-- Local Qwen3 8B 4-bit through MLX-LM is currently usable for read-only demos such as device status, sensors, power state, rules, and file listing, but it is not reliable enough for broad unattended tool use. It has timed out once on a `Status 0` command-read test and misclassified a file-read prompt as a display action, so keep approvals enabled for local models and prefer DeepSeek for file writes, Berry programming, display/audio actions, rule changes, and unattended runs.
-- `TasmoClawHttpsTest` checks the native HTTPS bridge and saved DeepSeek configuration from the Tasmota command console.
+- Local Qwen3 8B 4-bit through MLX-LM is usable for device status, sensors, power state, rules, file listing, FlashFS file work, LAN search, and the direct Lite intents tested on the board. Keep approvals enabled for actions when using local models; DeepSeek is still the better default for broad unattended tool use and complex Berry programming.
 - Full storage files are visible on the Tasmota filesystem as `/tasmoclaw_config.json`, `/tasmoclaw_history.json`, and `/tasmoclaw_pending.json`; Lite uses Tasmota Berry `persist`, and Full mirrors to `persist` as a fallback.
 
 Typical prompts include:
@@ -70,8 +68,8 @@ Typical prompts include:
 What are all the live sensor values?
 What are all the rules on the board?
 Read power state, then toggle power 2.
-Write "hello world" to hello_world.txt on the SD card.
-Read memory.md from the SD card.
+Write "hello world" to flash:/hello_world.txt.
+List the SD card root.
 Create a Berry hello world program, then run it and explain it.
 ```
 
@@ -90,7 +88,7 @@ The detailed TasmoClaw implementation notes, smoke checklist, and troubleshootin
 
 ### TRMNL dashboard
 
-TRMNL can run directly on the board when the firmware is built with `USE_TASMOCLAW_HTTPS`. In that mode, upload `tools/rlcd_trmnl/autoexec.be` to the Tasmota filesystem as `/autoexec.be`, then create `/trmnl_config.json` on the device:
+TRMNL can run directly on the board with stock Tasmota Berry `webclient()`. Upload `tools/rlcd_trmnl/autoexec.be` to the Tasmota filesystem as `/autoexec.be`, then create `/trmnl_config.json` on the device:
 
 ```json
 {
@@ -101,9 +99,9 @@ TRMNL can run directly on the board when the firmware is built with `USE_TASMOCL
 }
 ```
 
-The autoexec script sends the normal TRMNL display headers, downloads the frame through the native HTTPS helper, and renders it with `lv.trmnl_show_png()`. It still falls back to Berry `webclient()` for plain HTTP URLs.
+The autoexec script sends the normal TRMNL display headers, downloads the frame through Berry `webclient()`, and renders it with `lv.trmnl_show_png()`.
 
-The local bridge remains useful if you build firmware without native HTTPS, or if you want API credentials to live off-device. Store credentials locally on the bridge host, or export them as environment variables:
+The local bridge remains useful if you want API credentials to live off-device or prefer the board to fetch a LAN plain-HTTP URL. Store credentials locally on the bridge host, or export them as environment variables:
 
 ```bash
 mkdir -p ~/.config/trmnl_tasmota

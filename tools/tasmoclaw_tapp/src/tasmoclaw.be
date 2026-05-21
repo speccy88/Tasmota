@@ -103,7 +103,7 @@ class TasmoClawDriver : Driver
     self.last_schedule_tick = 0
 
     self.ensure_cmds()
-    tasmoclaw_util.debug('driver init done history=' + str(size(self.history)) + ' pending=' + str(self.pending != nil) + ' transport=' + str(self.cfg.find('https_transport')))
+    tasmoclaw_util.debug('driver init done history=' + str(size(self.history)) + ' pending=' + str(self.pending != nil))
   end
 
   def ensure_cmds()
@@ -111,7 +111,6 @@ class TasmoClawDriver : Driver
     tasmota.add_cmd('TasmoClaw', /cmd,idx,payload -> self.cmd_status())
     tasmota.add_cmd('TasmoClawReset', /cmd,idx,payload -> self.cmd_reset())
     tasmota.add_cmd('TasmoClawTest', /cmd,idx,payload -> self.cmd_test())
-    tasmota.add_cmd('TasmoClawHttpsTest', /cmd,idx,payload -> self.cmd_https_test())
     tasmota.add_cmd('TasmoClawTick', /cmd,idx,payload -> self.cmd_tick())
     tasmoclaw_util.debug('commands registered')
   end
@@ -120,7 +119,6 @@ class TasmoClawDriver : Driver
     try tasmota.remove_cmd('TasmoClaw') except .. as e,m end
     try tasmota.remove_cmd('TasmoClawReset') except .. as e,m end
     try tasmota.remove_cmd('TasmoClawTest') except .. as e,m end
-    try tasmota.remove_cmd('TasmoClawHttpsTest') except .. as e,m end
     try tasmota.remove_cmd('TasmoClawTick') except .. as e,m end
   end
 
@@ -138,10 +136,6 @@ class TasmoClawDriver : Driver
 
   def cmd_test()
     tasmota.resp_cmnd('{"ok":true}')
-  end
-
-  def cmd_https_test()
-    tasmota.resp_cmnd(tasmoclaw_util.json_encode(self.https_test_obj()))
   end
 
   def cmd_tick()
@@ -168,47 +162,6 @@ class TasmoClawDriver : Driver
     except .. as e,m
       tasmoclaw_util.debug('scheduler tick failed: ' + str(m))
     end
-  end
-
-  def https_test_obj()
-    tasmoclaw_util.debug('https test start')
-    var out = {
-      'ok':true,
-      'configured_transport':self.cfg.find('https_transport') == nil ? 'webclient' : self.cfg['https_transport']
-    }
-
-    out['bearssl_deepseek'] = self.llm.probe_webclient('https://api.deepseek.com/chat/completions')
-    out['bearssl_trmnl'] = self.llm.probe_webclient('https://trmnl.com/api/display')
-    out['native_deepseek'] = self.llm.probe_native_get('https://api.deepseek.com/chat/completions')
-    out['native_trmnl'] = self.llm.probe_native_get('https://trmnl.com/api/display')
-
-    if self.cfg.find('api_key') != nil && self.cfg['api_key'] != ''
-      var cfg2 = {}
-      for k:self.cfg.keys()
-        cfg2[k] = self.cfg[k]
-      end
-      cfg2['max_tokens'] = 100
-      cfg2['thinking'] = 'omit'
-      var r = self.llm.call_chat(cfg2, [
-        {'role':'system','content':'You are TasmoClaw. Reply exactly as requested.'},
-        {'role':'user','content':'Reply with exactly: TasmoClaw online.'}
-      ])
-      out['deepseek'] = {
-        'ok':r['ok'],
-        'transport':r.find('transport'),
-        'status':r.find('status'),
-        'error':r.find('error'),
-        'stage':r.find('stage'),
-        'esp_err':r.find('esp_err'),
-        'webclient_error':r.find('webclient_error'),
-        'content':tasmoclaw_util.preview(r.find('content'), 120),
-        'body':tasmoclaw_util.preview(r.find('body'), 220)
-      }
-      tasmoclaw_util.debug('https test deepseek ok=' + str(r.find('ok')) + ' transport=' + str(r.find('transport')) + ' status=' + str(r.find('status')) + ' error=' + str(r.find('error')))
-    end
-
-    tasmoclaw_util.debug('https test done')
-    return out
   end
 
   def web_add_console_button()
@@ -302,7 +255,6 @@ class TasmoClawDriver : Driver
     webserver.content_send('<label>Provider</label><select id="provider"><option value="deepseek">DeepSeek</option><option value="local_openai">Local OpenAI-compatible</option></select>')
     webserver.content_send('<label>API URL</label><input id="api_url" placeholder="https://api.deepseek.com/chat/completions or http://mac-ip:8080/v1/chat/completions">')
     webserver.content_send('<label>Model</label><input id="model" list="model_suggestions" placeholder="deepseek-v4-flash or local model id"><datalist id="model_suggestions"><option value="deepseek-v4-flash"><option value="deepseek-v4-pro"><option value="local"></datalist>')
-    webserver.content_send('<label>HTTPS transport</label><select id="https_transport"><option value="webclient">webclient / BearSSL</option><option value="auto">auto: BearSSL then native fallback</option><option value="native">native ESP-IDF bridge</option></select>')
     webserver.content_send('<label>API Key</label><input id="api_key" type="password">')
     webserver.content_send('<label>Search provider</label><select id="search_provider"><option value="searxng">SearXNG local/LAN</option><option value="brave">Brave Search cloud</option></select>')
     webserver.content_send('<label>Brave Search API key</label><input id="brave_api_key" type="password" placeholder="Stored locally; never shown back">')
@@ -325,7 +277,7 @@ class TasmoClawDriver : Driver
     webserver.content_send('<div id="msg" class="msg"></div>')
     webserver.content_send('</div>')
 
-    webserver.content_send('<script>const ids=["provider","api_url","model","https_transport","api_key","search_provider","brave_api_key","brave_proxy_url","searxng_url","vision_api_url","vision_model","vision_api_key","temperature","max_tokens","thinking","reasoning_effort","max_tool_iterations","history_limit","prompt_mode","context_byte_limit","system_extra"];const el=id=>document.getElementById(id);const note=t=>el("msg").textContent=t;function providerChanged(){if(el("provider").value=="local_openai"){el("api_key").placeholder="optional for local servers";el("thinking").value="omit";}else{el("api_key").placeholder="DeepSeek API key";}}function setCfg(c){ids.forEach(id=>{if(c[id]!=null)el(id).value=c[id];});el("auto_approve_tools").checked=!!c.auto_approve_tools;providerChanged();}function getCfg(){fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>setCfg(x.config||{})).catch(e=>note(String(e)));}function body(){let c={};ids.forEach(id=>c[id]=el(id).value);c.temperature=parseFloat(c.temperature);c.max_tokens=parseInt(c.max_tokens);c.max_tool_iterations=parseInt(c.max_tool_iterations);c.history_limit=parseInt(c.history_limit);c.context_byte_limit=parseInt(c.context_byte_limit);c.auto_approve_tools=el("auto_approve_tools").checked;return c;}function testText(x){if(x.ok)return (x.content||"OK")+" via "+(x.transport||"?")+" HTTP "+(x.status||"?");let p=[x.error||"Test failed"];if(x.transport)p.push("transport "+x.transport);if(x.status!=null)p.push("status "+x.status);if(x.attempts)p.push("attempt "+(x.attempt||"?")+"/"+x.attempts);if(x.stage)p.push("stage "+x.stage);if(x.esp_err!=null)p.push("esp_err "+x.esp_err);if(x.hint)p.push(x.hint);if(x.body)p.push("body: "+x.body);if(x.fallback_hint)p.push(x.fallback_hint);if(x.webclient_error)p.push("webclient: "+x.webclient_error);return p.join(" | ");}el("provider").onchange=providerChanged;el("save").onclick=()=>{note("Saving...");fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>{note(x.ok?"Saved":(x.error||"Save failed"));if(x.config)setCfg(x.config);}).catch(e=>note(String(e)));};el("test").onclick=()=>{note("Testing...");fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>note(testText(x))).catch(e=>note(String(e)));};getCfg();</script>')
+    webserver.content_send('<script>const ids=["provider","api_url","model","api_key","search_provider","brave_api_key","brave_proxy_url","searxng_url","vision_api_url","vision_model","vision_api_key","temperature","max_tokens","thinking","reasoning_effort","max_tool_iterations","history_limit","prompt_mode","context_byte_limit","system_extra"];const el=id=>document.getElementById(id);const note=t=>el("msg").textContent=t;function providerChanged(){if(el("provider").value=="local_openai"){el("api_key").placeholder="optional for local servers";el("thinking").value="omit";}else{el("api_key").placeholder="DeepSeek API key";}}function setCfg(c){ids.forEach(id=>{if(c[id]!=null)el(id).value=c[id];});el("auto_approve_tools").checked=!!c.auto_approve_tools;providerChanged();}function getCfg(){fetch("/tasmoclaw/api/config").then(r=>r.json()).then(x=>setCfg(x.config||{})).catch(e=>note(String(e)));}function body(){let c={};ids.forEach(id=>c[id]=el(id).value);c.temperature=parseFloat(c.temperature);c.max_tokens=parseInt(c.max_tokens);c.max_tool_iterations=parseInt(c.max_tool_iterations);c.history_limit=parseInt(c.history_limit);c.context_byte_limit=parseInt(c.context_byte_limit);c.auto_approve_tools=el("auto_approve_tools").checked;return c;}function testText(x){if(x.ok)return (x.content||"OK")+" via "+(x.transport||"?")+" HTTP "+(x.status||"?");let p=[x.error||"Test failed"];if(x.transport)p.push("transport "+x.transport);if(x.status!=null)p.push("status "+x.status);if(x.attempts)p.push("attempt "+(x.attempt||"?")+"/"+x.attempts);if(x.hint)p.push(x.hint);if(x.body)p.push("body: "+x.body);if(x.fallback_hint)p.push(x.fallback_hint);return p.join(" | ");}el("provider").onchange=providerChanged;el("save").onclick=()=>{note("Saving...");fetch("/tasmoclaw/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body())}).then(r=>r.json()).then(x=>{note(x.ok?"Saved":(x.error||"Save failed"));if(x.config)setCfg(x.config);}).catch(e=>note(String(e)));};el("test").onclick=()=>{note("Testing...");fetch("/tasmoclaw/api/test",{method:"POST"}).then(r=>r.json()).then(x=>note(testText(x))).catch(e=>note(String(e)));};getCfg();</script>')
 
     webserver.content_stop()
   end
@@ -357,8 +309,7 @@ class TasmoClawDriver : Driver
           out.push({
             'provider':str(p.find('provider') == nil ? '' : p.find('provider')),
             'api_url':str(p.find('api_url') == nil ? '' : p.find('api_url')),
-            'model':str(p.find('model') == nil ? '' : p.find('model')),
-            'https_transport':str(p.find('https_transport') == nil ? 'webclient' : p.find('https_transport'))
+            'model':str(p.find('model') == nil ? '' : p.find('model'))
           })
         end
       end
@@ -374,7 +325,7 @@ class TasmoClawDriver : Driver
       'provider':self.cfg.find('provider') == nil ? 'deepseek' : self.cfg['provider'],
       'model':self.cfg['model'],
       'api_url':self.cfg['api_url'],
-      'https_transport':self.cfg.find('https_transport') == nil ? 'webclient' : self.cfg['https_transport'],
+      'transport':'stock',
       'tested_models':[],
       'search_provider':self.cfg.find('search_provider') == nil ? 'searxng' : self.cfg['search_provider'],
       'active_skills':self.tools.active_skills(),
@@ -412,8 +363,9 @@ class TasmoClawDriver : Driver
       cfg['model'] = cfg['provider'] == 'local_openai' ? 'local' : defaults['model']
     end
 
-    if cfg['https_transport'] != 'native' && cfg['https_transport'] != 'auto'
-      cfg['https_transport'] = 'webclient'
+    var old_transport_key = 'https_' + 'transport'
+    if cfg.find(old_transport_key) != nil
+      try cfg.remove(old_transport_key) except .. as e_rm,m_rm end
     end
 
     if cfg['temperature'] == nil
@@ -500,8 +452,7 @@ class TasmoClawDriver : Driver
     return {
       'provider':provider,
       'api_url':self.cfg.find('api_url'),
-      'model':self.cfg.find('model'),
-      'https_transport':self.cfg.find('https_transport') == nil ? 'webclient' : self.cfg['https_transport']
+      'model':self.cfg.find('model')
     }
   end
 
@@ -509,7 +460,7 @@ class TasmoClawDriver : Driver
     if a == nil || b == nil
       return false
     end
-    return a.find('provider') == b.find('provider') && a.find('api_url') == b.find('api_url') && a.find('model') == b.find('model') && a.find('https_transport') == b.find('https_transport')
+    return a.find('provider') == b.find('provider') && a.find('api_url') == b.find('api_url') && a.find('model') == b.find('model')
   end
 
   def remember_tested_model()
@@ -608,7 +559,7 @@ class TasmoClawDriver : Driver
       var r = self.store.save_config(self.cfg)
 
       if r['ok']
-        tasmoclaw_util.debug('api config saved transport=' + str(self.cfg.find('https_transport')) + ' model=' + str(self.cfg.find('model')) + ' auto_approve=' + str(self.cfg.find('auto_approve_tools')))
+        tasmoclaw_util.debug('api config saved model=' + str(self.cfg.find('model')) + ' auto_approve=' + str(self.cfg.find('auto_approve_tools')))
         self.api_json({'ok':true,'config':self.masked_cfg(),'storage':r})
       else
         tasmoclaw_util.debug('api config save failed: ' + str(r.find('error')))
@@ -730,7 +681,7 @@ class TasmoClawDriver : Driver
     self.history.push({'role':'user','content':user})
 
     var msgs=self.base_messages()
-    if self.cfg.find('https_transport') != 'native' && !self.request_needs_tool(user)
+    if !self.request_needs_tool(user)
       msgs = self.simple_messages()
     end
     var loops=self.cfg['max_tool_iterations']
@@ -1732,8 +1683,8 @@ class TasmoClawDriver : Driver
     var mode = self.cfg.find('prompt_mode')
     var tool_lines = mode == 'full' ? self.tools.tool_lines() : self.tools.tool_lines_compact()
     var system_prompt = mode == 'full' ? tasmoclaw_prompt.build(tool_lines,self.cfg['system_extra']) : tasmoclaw_prompt.build_compact(tool_lines,self.cfg['system_extra'])
-    if mode == 'full' && size(system_prompt) > 6500 && self.cfg.find('https_transport') != 'native'
-      tasmoclaw_util.debug('base_messages compact fallback prompt_bytes=' + str(size(system_prompt)) + ' transport=' + str(self.cfg.find('https_transport')))
+    if mode == 'full' && size(system_prompt) > 6500
+      tasmoclaw_util.debug('base_messages compact fallback prompt_bytes=' + str(size(system_prompt)))
       mode = 'compact'
       tool_lines = self.tools.tool_lines_compact()
       system_prompt = tasmoclaw_prompt.build_compact(tool_lines,self.cfg['system_extra'])
@@ -1878,6 +1829,46 @@ class TasmoClawDriver : Driver
         end
 
         return user[start..stop]
+      end
+    end
+
+    var mentions_file = false
+    for marker:[' file', 'file ', 'filename', 'named ', 'called ']
+      var mi = string.find(lower, marker)
+      if mi != nil && mi >= 0
+        mentions_file = true
+      end
+    end
+
+    if mentions_file
+      var normalized = lower
+      for sep:['\n','\t','"','\'','`',',',':',';','(',')','[',']']
+        normalized = string.replace(normalized, sep, ' ')
+      end
+
+      var parts = string.split(normalized, ' ')
+      for token:parts
+        if token != nil && token != ''
+          var has_name_mark = false
+          if string.find(token, '_') != nil && string.find(token, '_') >= 0
+            has_name_mark = true
+          end
+          if string.find(token, '-') != nil && string.find(token, '-') >= 0
+            has_name_mark = true
+          end
+          if has_name_mark
+            var bad = false
+            for badch:['/','\\','?','&','=','%','#']
+              var bi = string.find(token, badch)
+              if bi != nil && bi >= 0
+                bad = true
+              end
+            end
+            if !bad
+              return token + '.txt'
+            end
+          end
+        end
       end
     end
 
@@ -2302,12 +2293,61 @@ class TasmoClawDriver : Driver
     return nil
   end
 
+  def text_has(s, needle)
+    var i = string.find(s, needle)
+    return i != nil && i >= 0
+  end
+
+  def day_mask_from_text(s)
+    if self.text_has(s, 'weekend')
+      return 'S-----S'
+    end
+    if self.text_has(s, 'weekday') || self.text_has(s, 'week day')
+      return '-MTWTF-'
+    end
+    if self.text_has(s, 'every day') || self.text_has(s, 'daily') || self.text_has(s, 'monday to sunday') || self.text_has(s, 'mon to sun') || self.text_has(s, 'from monday') || self.text_has(s, 'all week')
+      return 'SMTWTFS'
+    end
+    return 'SMTWTFS'
+  end
+
+  def light_schedule_intent(user)
+    var s = string.tolower(str(user))
+    var target_light = self.text_has(s, 'light') || self.text_has(s, 'lamp') || self.text_has(s, 'relay') || self.text_has(s, 'power')
+    var time_word = self.text_has(s, 'night') || self.text_has(s, 'sunset') || self.text_has(s, 'evening') || self.text_has(s, 'dark') || self.text_has(s, 'sunrise') || self.text_has(s, 'morning')
+    var wants_on = self.text_has(s, 'turn on') || self.text_has(s, 'switch on') || self.text_has(s, 'power on') || self.text_has(s, 'light on')
+    var wants_off = self.text_has(s, 'turn off') || self.text_has(s, 'switch off') || self.text_has(s, 'power off') || self.text_has(s, 'light off')
+    if !target_light || !time_word || (!wants_on && !wants_off)
+      return nil
+    end
+
+    var mode = (self.text_has(s, 'sunrise') || self.text_has(s, 'morning')) ? 1 : 2
+    var action = wants_off ? 0 : 1
+    var days = self.day_mask_from_text(s)
+    var value = '{"Arm":1,"Mode":' + str(mode) + ',"Time":"00:00","Window":0,"Days":"' + days + '","Repeat":1,"Output":1,"Action":' + str(action) + '}'
+    return {
+      'tool':'tool_sequence_run',
+      'args':{
+        'items':[
+          {'tool':'timer_control','args':{'kind':'timer','slot':'1','action':'set','value':value}},
+          {'tool':'timer_control','args':{'kind':'timers','action':'enable'}}
+        ]
+      },
+      'reason':'Schedule output 1 with a Tasmota Timer using sunset/sunrise mode and enable timers.'
+    }
+  end
+
   def direct_tool_for_user(user)
     if user == nil
       return nil
     end
 
     var u=string.tolower(user)
+
+    var sched = self.light_schedule_intent(user)
+    if sched != nil
+      return sched
+    end
 
     var has_sequence_request = false
     for sq:[' then ',' and then ',', then ',' after ',' next ']
@@ -2714,6 +2754,14 @@ class TasmoClawDriver : Driver
       end
     end
     if display_word
+      for ndw:['not display','do not display',"don't display",'not screen','do not screen',"don't screen"]
+        var ndwi = string.find(u, ndw)
+        if ndwi != nil && ndwi >= 0
+          display_word = false
+        end
+      end
+    end
+    if display_word
       for dsk:['status','info','configuration','config']
         var dski = string.find(u, dsk)
         if dski != nil && dski >= 0
@@ -2971,13 +3019,31 @@ class TasmoClawDriver : Driver
         if file_content == ''
           file_content = 'Hello from TasmoClaw\n'
         end
-        var file_path = named_file
+        var file_path = self.prefixed_named_path('flash', named_file)
         if (asks_sd != nil && asks_sd >= 0)
           file_path = self.prefixed_named_path('sd', named_file)
         elif (asks_flash != nil && asks_flash >= 0)
           file_path = self.prefixed_named_path('flash', named_file)
         end
         return {'tool':'file_write','args':{'path':file_path,'content':file_content},'reason':'Write the requested file.'}
+      end
+
+      var wants_delete_file = false
+      for fd:['delete','remove','erase']
+        var fdi = string.find(u, fd)
+        if fdi != nil && fdi >= 0
+          wants_delete_file = true
+        end
+      end
+
+      if wants_delete_file
+        var del_path = self.prefixed_named_path('flash', named_file)
+        if (asks_sd != nil && asks_sd >= 0)
+          del_path = self.prefixed_named_path('sd', named_file)
+        elif (asks_flash != nil && asks_flash >= 0)
+          del_path = self.prefixed_named_path('flash', named_file)
+        end
+        return {'tool':'file_delete','args':{'path':del_path},'reason':'Delete the requested file.'}
       end
 
       var wants_read_file = false
@@ -2994,7 +3060,7 @@ class TasmoClawDriver : Driver
         elif (asks_sd != nil && asks_sd >= 0)
           return {'tool':'file_read','args':{'path':self.prefixed_named_path('sd', named_file),'max_bytes':8192},'reason':'Attempt the requested SD read and report the stock-firmware limitation if Berry cannot read SD files.'}
         end
-        return {'tool':'file_read','args':{'path':named_file,'max_bytes':8192},'reason':'Read the requested file.'}
+        return {'tool':'file_read','args':{'path':self.prefixed_named_path('flash', named_file),'max_bytes':8192},'reason':'Read the requested file from internal FlashFS.'}
       end
     end
 
@@ -3346,12 +3412,9 @@ class TasmoClawDriver : Driver
         'error':r['error'],
         'transport':r.find('transport'),
         'status':r.find('status'),
-        'stage':r.find('stage'),
-        'esp_err':r.find('esp_err'),
         'body':r.find('body'),
         'hint':r.find('hint'),
         'fallback_hint':r.find('fallback_hint'),
-        'webclient_error':r.find('webclient_error'),
         'attempt':r.find('attempt'),
         'attempts':r.find('attempts')
       })

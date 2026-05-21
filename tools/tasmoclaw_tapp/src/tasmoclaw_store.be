@@ -24,7 +24,6 @@ class TasmoClawStore
       'model':'deepseek-v4-flash',
       'model_flash':'deepseek-v4-flash',
       'model_pro':'deepseek-v4-pro',
-      'https_transport':'webclient',
       'api_key':'',
       'temperature':0.2,
       'max_tokens':700,
@@ -221,7 +220,7 @@ class TasmoClawStore
       end
     end
 
-    tasmoclaw_util.debug('store load_config done transport=' + str(cfg.find('https_transport')) + ' model=' + str(cfg.find('model')))
+    tasmoclaw_util.debug('store load_config done model=' + str(cfg.find('model')))
     return cfg
   end
 

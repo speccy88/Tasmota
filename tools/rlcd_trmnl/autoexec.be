@@ -116,67 +116,6 @@ class TrmnlDashboard
     client.add_header("Height", str(self.HEIGHT))
   end
 
-  def native_https_available(name)
-    return global.contains(name)
-  end
-
-  def display_headers_json(accept)
-    var h = {
-      "Accept": accept,
-      "Connection": "close",
-      "User-Agent": "Tasmota-LVGL-TRMNL/0.1",
-      "Refresh-Rate": str(self.refresh_s),
-      "Battery-Voltage": "4.2",
-      "FW-Version": "tasmota-lvgl-trmnl",
-      "RSSI": "100",
-      "Width": str(self.WIDTH),
-      "Height": str(self.HEIGHT)
-    }
-    if self.send_auth
-      h["ID"] = self.trmnl_id
-      h["Access-Token"] = self.trmnl_token
-    end
-    return json.dump(h)
-  end
-
-  def native_get(url, accept)
-    if !string.startswith(url, "https://") || !self.native_https_available("idf_https_get")
-      return nil
-    end
-    var raw = idf_https_get(url, self.display_headers_json(accept))
-    var res = json.load(raw)
-    if res == nil
-      raise "connection_error", "native HTTPS GET returned invalid json"
-    end
-    if !res.find("ok")
-      var err = res.find("error")
-      if err == nil err = "native HTTPS GET failed" end
-      raise "connection_error", err
-    end
-    var status = res.find("status")
-    if status != 200
-      raise "connection_error", format("native HTTPS GET status %d", status)
-    end
-    return res.find("body")
-  end
-
-  def native_download(url, accept, file_path)
-    if !string.startswith(url, "https://") || !self.native_https_available("idf_https_download")
-      return nil
-    end
-    var raw = idf_https_download(url, self.display_headers_json(accept), file_path)
-    var res = json.load(raw)
-    if res == nil
-      raise "connection_error", "native HTTPS download returned invalid json"
-    end
-    if !res.find("ok")
-      var err = res.find("error")
-      if err == nil err = "native HTTPS download failed" end
-      raise "connection_error", err
-    end
-    return res.find("bytes")
-  end
-
   def webclient_get(url, accept)
     var api = webclient()
     api.set_follow_redirects(true)
@@ -217,10 +156,7 @@ class TrmnlDashboard
     var next_refresh = self.DEFAULT_REFRESH_S
     try
       self.load_config()
-      var body = self.native_get(self.api_url, "application/json")
-      if body == nil
-        body = self.webclient_get(self.api_url, "application/json")
-      end
+      var body = self.webclient_get(self.api_url, "application/json")
 
       var info = json.load(body)
       if info == nil
@@ -236,13 +172,10 @@ class TrmnlDashboard
       end
 
       self.remove_file(self.FRAME_NEXT)
-      var written = self.native_download(image_url, "image/png,*/*", self.FRAME_NEXT)
-      if written == nil
-        if string.startswith(image_url, "https://trmnl.s3.")
-          image_url = "http://" + image_url[8..]
-        end
-        written = self.webclient_download(image_url, self.FRAME_NEXT)
+      if string.startswith(image_url, "https://trmnl.s3.")
+        image_url = "http://" + image_url[8..]
       end
+      var written = self.webclient_download(image_url, self.FRAME_NEXT)
 
       lv.start()
       var rendered = lv.trmnl_show_png(self.FRAME_NEXT, self.ROTATION)
