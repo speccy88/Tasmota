@@ -34,7 +34,7 @@ Current port status:
 
 TasmoClaw is an experimental Tasmota Application for the ESP32-S3-RLCD-4.2 build. The app itself is Berry code packaged as a local `.tapp`; the firmware side only adds a small optional native helper for HTTPS POST and SD/UFS access. It is not a proxy, MCP bridge, streaming client, Telegram bot, or external local service.
 
-At runtime, upload and load `tools/tasmoclaw_tapp/dist/tasmoclaw.tapp`, then open:
+At runtime, upload one of the generated TasmoClaw `.tapp` files, load it, then open:
 
 ```text
 http://<device-ip>/tasmoclaw
@@ -50,14 +50,19 @@ TasmoClaw works by giving the model a compact registry of device tools. For requ
 
 The portable HTTPS path is Tasmota Berry `webclient()`/BearSSL. TasmoClaw defaults to compact prompt mode with a bounded context byte limit so regular ESP32 boards without PSRAM are less likely to hit webclient `HTTP -8` (“too little RAM”) during DeepSeek POST requests. The optional native HTTPS helper remains separate and should only be used for custom firmware builds that need it.
 
+On classic ESP32 modules without PSRAM, the full `.tapp` is too large to import. Its autoexec now checks for PSRAM and returns before loading the heavy modules, so Tasmota remains bootable and you can delete or replace the file from the normal file manager. For stock firmware from the Tasmota web installer, use `dist/tasmoclaw_lite.tapp`, which keeps the nicer UI plus selected safe tools while avoiding the full app's broad command catalog and native helpers. TasmoClaw debug call sites remain in the artifacts and only emit logs when `WebLog 4` or `SerialLog 4` is enabled.
+
 Important pieces:
 
-- `tools/tasmoclaw_tapp/build_tapp.py` generates the uploadable `.tapp`; this side-project branch keeps the current `dist/tasmoclaw.tapp` available for download.
+- `tools/tasmoclaw_tapp/build_tapp.py` generates Lite and Full `.tapp` variants by default; this side-project branch keeps the generated artifacts available for download.
+- The same builder exports Tasmota-Extensions raw folders for `TasmoClaw Lite` and `TasmoClaw Full`, including manifests and unloadable extension entrypoints suitable for an upstream `tasmota/Tasmota-Extensions` PR.
 - `tasmota/tasmota_xdrv_driver/xdrv_99_tasmoclaw_https.ino` exposes `idf_https_post()`, `idf_https_get()`, `idf_https_download()`, and native SD/UFS helpers to Berry when `USE_TASMOCLAW_HTTPS` is enabled.
 - The Tasmota file manager now has a FlashFS/SDCard selector, plus Copy/Move actions for regular files when both filesystems are mounted. Native/TasmoClaw filesystem paths can use `sd:/...` or `flash:/...` to avoid ambiguity.
-- The default DeepSeek endpoint is `https://api.deepseek.com/chat/completions`, with `deepseek-v4-flash` as the default model and `deepseek-v4-pro` as the heavier option.
+- The default DeepSeek endpoint is `https://api.deepseek.com/chat/completions`, with `deepseek-v4-flash` as the default model and `deepseek-v4-pro` as the heavier option. The config page also supports `Local OpenAI-compatible` endpoints such as MLX-LM on `http://<mac-lan-ip>:8080/v1/chat/completions` or Ollama on `http://<mac-lan-ip>:11434/v1/chat/completions`; local model names are free-form.
+- Successful `Test API` runs are remembered as known-good model profiles. The TasmoClaw main page exposes those tested profiles in a model switcher, so only endpoints/models that have actually answered are offered for quick switching.
+- Local Qwen3 8B 4-bit through MLX-LM is currently usable for read-only demos such as device status, sensors, power state, rules, and file listing, but it is not reliable enough for broad unattended tool use. It has timed out once on a `Status 0` command-read test and misclassified a file-read prompt as a display action, so keep approvals enabled for local models and prefer DeepSeek for file writes, Berry programming, display/audio actions, rule changes, and unattended runs.
 - `TasmoClawHttpsTest` checks the native HTTPS bridge and saved DeepSeek configuration from the Tasmota command console.
-- Storage files are visible on the Tasmota filesystem as `/tasmoclaw_config.json`, `/tasmoclaw_history.json`, and `/tasmoclaw_pending.json`.
+- Full storage files are visible on the Tasmota filesystem as `/tasmoclaw_config.json`, `/tasmoclaw_history.json`, and `/tasmoclaw_pending.json`; Lite uses Tasmota Berry `persist`, and Full mirrors to `persist` as a fallback.
 
 Typical prompts include:
 
@@ -76,6 +81,10 @@ Build the TAPP locally:
 cd tools/tasmoclaw_tapp
 python3 build_tapp.py
 ```
+
+This builds `tasmoclaw_lite.tapp` and `tasmoclaw.tapp`. Both keep TasmoClaw debug logging paths, which only emit when troubleshooting with `WebLog 4` or `SerialLog 4`.
+
+It also exports ready-to-copy Tasmota-Extensions raw folders at `tools/tasmoclaw_tapp/dist/tasmota_extensions/raw/TasmoClaw_Lite` and `tools/tasmoclaw_tapp/dist/tasmota_extensions/raw/TasmoClaw_Full`. Copy those folders into a `Tasmota-Extensions/raw/` checkout and run that repository's `python3 gen.py` before opening a PR. The repeatable PR playbook is in [`tools/tasmoclaw_tapp/TASMOTA_EXTENSIONS_PR.md`](tools/tasmoclaw_tapp/TASMOTA_EXTENSIONS_PR.md).
 
 The detailed TasmoClaw implementation notes, smoke checklist, and troubleshooting guide live in [`tools/tasmoclaw_tapp/README.md`](tools/tasmoclaw_tapp/README.md).
 

@@ -1,11 +1,16 @@
 import json
 import string
-import tasmoclaw_util
+import introspect
+
+var tasmoclaw_util = introspect.module('tasmoclaw_util')
 
 class TasmoClawLLM
 
   def call_chat(cfg, messages)
-    if cfg.find('api_key') == nil || cfg['api_key'] == ''
+    var provider = self.provider(cfg)
+    var local_provider = self.is_local_provider(provider)
+
+    if !local_provider && (cfg.find('api_key') == nil || cfg['api_key'] == '')
       tasmoclaw_util.debug('llm config error: missing api_key')
       return {'ok':false,'error':'Missing DeepSeek API key'}
     end
@@ -43,6 +48,10 @@ class TasmoClawLLM
       thinking = 'omit'
     end
 
+    if local_provider
+      thinking = 'omit'
+    end
+
     if thinking == 'enabled'
       payload['thinking'] = {'type':'enabled'}
       payload['reasoning_effort'] = cfg.find('reasoning_effort') == nil ? 'high' : cfg['reasoning_effort']
@@ -55,9 +64,13 @@ class TasmoClawLLM
       'Content-Type':'application/json',
       'Accept':'application/json',
       'Connection':'close',
-      'Authorization':'Bearer '+cfg['api_key'],
       'User-Agent':'TasmoClaw/0.1'
     }
+
+    if !local_provider && cfg.find('api_key') != nil && cfg['api_key'] != ''
+      headers['Authorization'] = 'Bearer '+cfg['api_key']
+    end
+
     var headers_s = tasmoclaw_util.json_encode(headers)
 
     var transport = cfg.find('https_transport')
@@ -69,7 +82,7 @@ class TasmoClawLLM
       transport = 'webclient'
     end
 
-    tasmoclaw_util.debug('llm call start transport=' + transport + ' model=' + str(cfg['model']) + ' messages=' + str(size(messages)) + ' payload_bytes=' + str(size(payload_s)) + ' max_tokens=' + str(max_tokens) + ' thinking=' + thinking)
+    tasmoclaw_util.debug('llm call start provider=' + provider + ' transport=' + transport + ' model=' + str(cfg['model']) + ' messages=' + str(size(messages)) + ' payload_bytes=' + str(size(payload_s)) + ' max_tokens=' + str(max_tokens) + ' thinking=' + thinking)
 
     if transport == 'native'
       return self.call_chat_native(cfg, payload_s, headers_s, nil)
@@ -90,6 +103,18 @@ class TasmoClawLLM
     end
 
     return self.call_chat_webclient(cfg, payload_s, nil)
+  end
+
+  def provider(cfg)
+    var p = cfg.find('provider')
+    if p == nil || p == ''
+      return 'deepseek'
+    end
+    return str(p)
+  end
+
+  def is_local_provider(provider)
+    return provider == 'local_openai' || provider == 'local' || provider == 'openai_compatible'
   end
 
   def should_native_fallback(r)
@@ -182,7 +207,7 @@ class TasmoClawLLM
     }
 
     if status == 401 || status == 403
-      r['hint'] = 'Check the DeepSeek API key in /tasmoclaw/config.'
+      r['hint'] = 'Check the API key or local server auth settings in /tasmoclaw/config.'
     end
 
     if extra_error != nil
@@ -376,7 +401,9 @@ class TasmoClawLLM
       cl.add_header('Content-Type','application/json')
       cl.add_header('Accept','application/json')
       cl.add_header('Connection','close')
-      cl.add_header('Authorization','Bearer '+cfg['api_key'])
+      if !self.is_local_provider(self.provider(cfg)) && cfg.find('api_key') != nil && cfg['api_key'] != ''
+        cl.add_header('Authorization','Bearer '+cfg['api_key'])
+      end
       cl.add_header('User-Agent','TasmoClaw/0.1')
 
       var code = cl.POST(payload_s)
@@ -576,22 +603,32 @@ class TasmoClawLLM
       if o.find('choices') == nil || size(o['choices']) == 0
         if o.find('error') != nil || o.find('message') != nil || o.find('detail') != nil
           tasmoclaw_util.debug('llm parse API error object: ' + self.extract_error_message(body))
-          return {'ok':false,'error':'DeepSeek API error: '+self.extract_error_message(body),'body':tasmoclaw_util.preview(body, 500)}
+          return {'ok':false,'error':'OpenAI-compatible API error: '+self.extract_error_message(body),'body':tasmoclaw_util.preview(body, 500)}
         end
         tasmoclaw_util.debug('llm parse missing choices')
-        return {'ok':false,'error':'DeepSeek response missing choices','body':tasmoclaw_util.preview(body, 500)}
+        return {'ok':false,'error':'OpenAI-compatible response missing choices','body':tasmoclaw_util.preview(body, 500)}
       end
 
       var msg = o['choices'][0]['message']
 
-      if msg == nil || msg.find('content') == nil
+      if msg == nil
+        tasmoclaw_util.debug('llm parse missing message')
+        return {'ok':false,'error':'OpenAI-compatible response missing message','body':tasmoclaw_util.preview(body, 500)}
+      end
+
+      if msg.find('content') == nil && msg.find('reasoning') != nil
+        tasmoclaw_util.debug('llm parse using reasoning field as local fallback')
+        return {'ok':true,'content':str(msg['reasoning']),'raw':o,'reasoning_fallback':true}
+      end
+
+      if msg.find('content') == nil
         tasmoclaw_util.debug('llm parse missing message content')
-        return {'ok':false,'error':'DeepSeek response missing message content','body':tasmoclaw_util.preview(body, 500)}
+        return {'ok':false,'error':'OpenAI-compatible response missing message content','body':tasmoclaw_util.preview(body, 500)}
       end
 
       if msg['content'] == nil || size(msg['content']) == 0
         tasmoclaw_util.debug('llm parse empty assistant content')
-        return {'ok':false,'error':'DeepSeek response had empty assistant content','body':tasmoclaw_util.preview(body, 500)}
+        return {'ok':true,'content':'','raw':o,'empty_content':true}
       end
 
       tasmoclaw_util.debug('llm parse ok content_bytes=' + str(size(msg['content'])))
@@ -611,4 +648,5 @@ tasmoclaw_llm.create = def()
   return TasmoClawLLM()
 end
 
+global.tasmoclaw_llm_mod = tasmoclaw_llm
 return tasmoclaw_llm

@@ -1,8 +1,8 @@
 # TasmoClaw TAPP
 
-TasmoClaw is a mostly Berry/TAPP Tasmota Application packaged as one locally generated `.tapp` file. It adds a small web chat page to a Tasmota ESP32 device, talks directly to the DeepSeek Chat Completions API, and exposes a demo-oriented set of tools for reading status, reading sensors and power, writing files, writing/reading/running/explaining Berry programs, writing SD-card markdown memory files, applying rules, and creating a simple Berry command file.
+TasmoClaw is a mostly Berry/TAPP Tasmota Application packaged as one locally generated `.tapp` file. It adds a small web chat page to a Tasmota ESP32 device, talks to DeepSeek or local OpenAI-compatible chat servers, and exposes tools for device status, sensors, power, UFS/SD, FlashFS files, Berry programs/scripts, memory, scheduler rules, event routing, web search, HTTP bridge calls, image URL inspection, display/LVGL, audio, MQTT, timers, rules, and command building.
 
-TasmoClaw does not use MCP, streaming, Telegram/instant messaging, or a local proxy. The portable default HTTPS path is Tasmota Berry `webclient()` using BearSSL. On ESP32 builds where that path fails, TasmoClaw can use the optional native HTTPS helper described below.
+TasmoClaw does not use MCP, streaming, Telegram, or instant messaging. It does include an MCP-lite HTTP bridge tool: the device can call a LAN/cloud HTTP endpoint with GET or POST and feed the response back into the agent. The portable default HTTPS path is Tasmota Berry `webclient()` using BearSSL. On ESP32 builds where that path fails, TasmoClaw can use the optional native HTTPS helper described below.
 
 ## Requirements
 
@@ -11,6 +11,8 @@ TasmoClaw does not use MCP, streaming, Telegram/instant messaging, or a local pr
 - Recommended for this board: PSRAM enabled, `USE_SDCARD`, and `USE_SHT3X`.
 - Optional for this custom RLCD build only: `USE_TASMOCLAW_HTTPS` if Berry `webclient()` HTTPS still fails and you want the native ESP-IDF fallback.
 - A DeepSeek API key.
+- Optional: Brave Search API key for cloud web search.
+- Optional: SearXNG on a LAN host for local/private web search.
 
 ## Build the TAPP
 
@@ -21,29 +23,100 @@ cd tools/tasmoclaw_tapp
 python3 build_tapp.py
 ```
 
-This creates `dist/tasmoclaw.tapp` using ZIP_STORED/uncompressed entries for Tasmota.
+With no arguments this creates two ZIP_STORED/uncompressed TAPP files:
 
-Upstream-style PRs should normally avoid generated `.tapp` artifacts and attach ready-to-upload builds to GitHub Releases. This side-project branch intentionally keeps the current `dist/tasmoclaw.tapp` tracked so it can be downloaded directly from GitHub while the board support work is in progress.
+- `dist/tasmoclaw_lite.tapp`: regular ESP32-friendly build with the nice UI and selected safe tools.
+- `dist/tasmoclaw.tapp`: full ESP32-S3/PSRAM/Waveshare feature build.
+
+It also exports Tasmota-Extensions-ready raw folders:
+
+- `dist/tasmota_extensions/raw/TasmoClaw_Lite/`
+- `dist/tasmota_extensions/raw/TasmoClaw_Full/`
+
+You can also build one target with `python3 build_tapp.py --target lite`, `--target full`, or explicitly build everything with `--target all`.
+Use `--skip-extension-export` only when you want to rebuild the standalone `.tapp` files without regenerating the extension raw folders.
+
+TasmoClaw keeps its debug call sites in both artifacts. They only emit logs when Tasmota debug logging is enabled with `WebLog 4` or `SerialLog 4`, and keeping one debug-capable artifact per target keeps the install choices simple.
+
+Upstream-style PRs should normally avoid generated `.tapp` artifacts and attach ready-to-upload builds to GitHub Releases. This side-project branch intentionally keeps the generated `dist/*.tapp` files tracked so they can be downloaded directly from GitHub while the board support work is in progress.
+
+## Tasmota-Extensions Packaging
+
+TasmoClaw can be submitted to [Tasmota-Extensions](https://github.com/tasmota/Tasmota-Extensions) as two Extension Manager entries:
+
+- `TasmoClaw Lite`: stock ESP32-friendly package for no-PSRAM devices.
+- `TasmoClaw Full`: PSRAM-oriented package with the broad tool catalog, filesystem/SD helpers, Berry programming, and advanced workflows.
+
+The extension exports use Tasmota's standard pattern: each raw folder contains `manifest.json`, an extension-style `autoexec.be`, and the Berry modules needed by that variant. The extension `autoexec.be` registers the returned driver object with `tasmota.add_extension(...)`, and the driver exposes `unload()` so Extension Manager can remove drivers, commands, and web routes cleanly.
+
+For the full repeatable PR workflow, use [TASMOTA_EXTENSIONS_PR.md](TASMOTA_EXTENSIONS_PR.md). That file is the handoff playbook for future agents: it documents the source-of-truth files, `build_tapp.py`, `gen.py`, expected PR file layout, hardware smoke checks, commit/push commands, and PR creation command.
+
+To prepare an upstream PR:
+
+```bash
+cd tools/tasmoclaw_tapp
+python3 build_tapp.py
+
+git clone https://github.com/tasmota/Tasmota-Extensions.git /tmp/Tasmota-Extensions
+cp -R dist/tasmota_extensions/raw/TasmoClaw_Lite /tmp/Tasmota-Extensions/raw/
+cp -R dist/tasmota_extensions/raw/TasmoClaw_Full /tmp/Tasmota-Extensions/raw/
+cd /tmp/Tasmota-Extensions
+python3 gen.py
+```
+
+The PR to `tasmota/Tasmota-Extensions` should add the two `raw/TasmoClaw_*` folders. That repository's `gen.py` creates `extensions/tapp/*.tapp` and `extensions/extensions.jsonl` from the raw folders.
+
+### Standard ESP32 / no-PSRAM builds
+
+Regular Tasmota32 builds on classic ESP32 modules without PSRAM have much less Berry heap than the Waveshare ESP32-S3 board. The full TasmoClaw package can fail at boot with:
+
+```text
+BRY: *** MEMORY ALLOCATION FAILED ***
+failed to run compiled code (import_error - module 'tasmoclaw_ui' not found)
+```
+
+That failure happens while importing the `.tapp`, before any HTTPS request. For standard firmware from the Tasmota web installer, upload the Lite build instead:
+
+- `tasmoclaw_lite.tapp`: the nicer TasmoClaw UI, compact chat, read tools, file read/list where standard filesystem access works, and approval-gated safe actions for power, `DisplayText`, and `I2SRtttl`.
+
+The Full package has a defensive autoexec guard: if it is loaded on a board without PSRAM, it prints a message and returns before importing the heavy modules. This keeps Tasmota bootable so you can open the normal file manager and remove or replace the `.tapp`. It does not make Full usable on no-PSRAM ESP32 boards; use Lite there.
+
+Load Lite with:
+
+```text
+Br load("/tasmoclaw_lite.tapp")
+```
+
+If the device already has a boot rule such as `Rule2 ON System#Boot DO Br load("/tasmoclaw.tapp") ENDON`, either change that rule to load `/tasmoclaw_lite.tapp`, or upload Lite under the filename `/tasmoclaw.tapp` so the existing boot rule loads the smaller app.
+
+Lite is built from shared source modules in `src/`. It intentionally does not import the full app's large command catalog, native bridge helpers, SD helpers, or Berry programming tools.
+
+Lite stores its configuration with Tasmota's documented Berry `persist` module (`persist.find`, `persist.setmember`, `persist.save(true)`) instead of ad-hoc JSON files. This keeps the small build compatible with stock ESP32 firmware where full file-backed storage may be too heavy or unavailable.
 
 ## Install
 
-1. Upload `dist/tasmoclaw.tapp` to Tasmota filesystem.
+1. Upload the chosen artifact to Tasmota filesystem: `dist/tasmoclaw_lite.tapp` or `dist/tasmoclaw.tapp`.
 2. Reboot device.
 3. Open `http://<device-ip>/tasmoclaw`.
+
+On this Waveshare board, the stock SD web upload endpoint can leave large binary `.tapp` files as zero-byte or partially zero-filled files. For repeatable hardware tests, upload the `.tapp` with Berry `open(..., "w"/"a")` in 256-byte chunks, then download it back through `/ufsd?fs=sd&download=/tasmoclaw.tapp` and compare SHA-256 before `Br load("/sd/tasmoclaw.tapp")`.
 
 Direct URLs:
 
 - Chat: `http://<device-ip>/tasmoclaw`
 - Config: `http://<device-ip>/tasmoclaw/config`
 
-## Configure DeepSeek
+## Configure DeepSeek Or A Local Model
 
 Open `/tasmoclaw/config` and set:
 
+- Provider:
+  - `DeepSeek` for the hosted DeepSeek API.
+  - `Local OpenAI-compatible` for MLX-LM, Ollama, llama.cpp server, or another local `/v1/chat/completions` endpoint.
 - API URL: `https://api.deepseek.com/chat/completions`
 - Model default: `deepseek-v4-flash`
 - Model optional: `deepseek-v4-pro`
-- API key: your DeepSeek key
+- API key: your DeepSeek key. Local servers usually do not need a key; leaving it blank clears the saved key for local mode.
 - HTTPS transport:
   - `webclient / BearSSL`: default and portable for normal Tasmota builds.
   - `auto`: try BearSSL first, then the optional native helper only if no HTTP response is received.
@@ -53,6 +126,124 @@ Open `/tasmoclaw/config` and set:
 TasmoClaw defaults to `prompt mode: compact` and a bounded context byte limit so normal ESP32 builds can use the portable BearSSL `webclient()` path. Use `prompt mode: full` only on boards with enough free heap/PSRAM, or when debugging tool-selection behavior.
 
 The config page loads `/tasmoclaw/api/config`, saves with `POST /tasmoclaw/api/config`, and tests the current API settings with `POST /tasmoclaw/api/test`. The API key is masked as `********` when read back. Saving an empty key or `********` preserves the existing key; entering a new non-empty value replaces it.
+
+When `Test API` succeeds, TasmoClaw records the current provider, API URL, model, and transport as a known-good model profile. The main chat page then shows those tested profiles in a small model switcher, so you can jump between DeepSeek and local OpenAI-compatible servers without reopening the config page. Untested models are not listed there.
+
+For a local OpenAI-compatible server, use the server's LAN-reachable URL. From a Mac running MLX-LM on the same network, an example is:
+
+```text
+Provider: Local OpenAI-compatible
+API URL: http://<mac-lan-ip>:8080/v1/chat/completions
+Model: <local model id>
+API key: blank unless your local server requires one
+```
+
+For Ollama's OpenAI-compatible API, the URL is usually:
+
+```text
+http://<mac-lan-ip>:11434/v1/chat/completions
+```
+
+TasmoClaw does not hard-code local model names. Put whatever model/deployment name your local server expects in the Model field.
+
+## Search: Brave Cloud Or Local SearXNG
+
+TasmoClaw has one `web_search` tool with two providers:
+
+- `brave`: Brave Search API. Configure `Search provider = brave` and set the Brave Search API key.
+- `searxng`: local/LAN SearXNG JSON endpoint. Configure `Search provider = searxng` and set `SearXNG URL`, for example `http://<mac-lan-ip>:8888/search`.
+
+Stock Tasmota's Berry `webclient()` may fail against some HTTPS APIs even when other HTTPS endpoints work. If direct Brave HTTPS returns a negative webclient status, run a small LAN bridge and set `Brave proxy URL` to the bridge endpoint. In proxy mode, keep the Brave API key on the host proxy; TasmoClaw talks to the bridge over LAN HTTP without adding custom auth headers. For plain HTTP LAN URLs, TasmoClaw uses a low-level `tcpclient` GET path so the search proxies and `http_bridge_call` still work when the full app leaves too little heap for `webclient()`.
+
+```text
+Search provider: brave
+Brave Search API key: blank when the proxy holds the key
+Brave proxy URL: http://<mac-lan-ip>:8767/res/v1/web/search
+```
+
+The included helper can run that bridge without storing the key in the repo:
+
+```bash
+BRAVE_SEARCH_API_KEY=<key> \
+python3 tools/tasmoclaw_tapp/brave_search_proxy.py --host 0.0.0.0 --port 8767
+```
+
+If the host Python certificate store cannot verify Brave's TLS chain, add `--no-verify-tls` or fix the host CA store. Do not commit API keys.
+
+For the most reliable stock-firmware path, run the combined compact proxy on a LAN port the ESP32 can already reach:
+
+```bash
+BRAVE_SEARCH_API_KEY=<key> \
+python3 tools/tasmoclaw_tapp/tasmoclaw_search_proxy.py \
+  --host 0.0.0.0 \
+  --port 8766 \
+  --searxng-upstream http://127.0.0.1:8888/search \
+  --no-verify-tls
+```
+
+Then configure:
+
+```text
+Brave proxy URL: http://<mac-lan-ip>:8766/brave
+SearXNG URL: http://<mac-lan-ip>:8766/searxng
+```
+
+The local SearXNG path was tested with SearXNG installed from source in a Python virtualenv, with JSON enabled in `settings.yml`:
+
+```bash
+git clone --depth 1 https://github.com/searxng/searxng.git /tmp/searxng
+python3 -m venv /tmp/searxng/.venv
+/tmp/searxng/.venv/bin/pip install -U pip wheel setuptools
+/tmp/searxng/.venv/bin/pip install -r /tmp/searxng/requirements.txt -r /tmp/searxng/requirements-server.txt
+/tmp/searxng/.venv/bin/pip install --no-build-isolation -e /tmp/searxng
+```
+
+Use a settings copy with `server.bind_address: "0.0.0.0"` and `search.formats` containing `json`, then run:
+
+```bash
+SEARXNG_SETTINGS_PATH=/tmp/searxng/settings-local.yml \
+SEARXNG_SECRET=<local-secret> \
+/tmp/searxng/.venv/bin/python -m searx.webapp
+```
+
+From the board, use the LAN IP, not `127.0.0.1`, because `127.0.0.1` would be the ESP32 itself.
+
+If stock `webclient()` struggles with the full SearXNG JSON response and you do not want the combined proxy, run the included compact bridge and point `SearXNG URL` at it:
+
+```bash
+python3 tools/tasmoclaw_tapp/searxng_compact_proxy.py \
+  --host 0.0.0.0 \
+  --port 8768 \
+  --upstream http://127.0.0.1:8888/search
+```
+
+```text
+SearXNG URL: http://<mac-lan-ip>:8768/search
+```
+
+## Stock Firmware UFS/SD Limits
+
+TasmoClaw stays within stock Tasmota firmware APIs. For SD cards, stock UFS commands support status, listing, delete, rename, and run-style operations, and the web file manager can upload/download content from a browser or host. Stock Berry does not expose reliable SD file-content read/write/copy/move APIs. TasmoClaw therefore:
+
+- supports FlashFS text read/write/copy/move/delete through Berry where available;
+- supports stock UFS status/list/delete/rename/run commands for `sd:` and `flash:` paths;
+- returns an explicit stock-firmware limitation when a tool asks Berry to copy/read/write SD file content;
+- reports the matching web endpoints, such as `GET /ufsd?fs=sd&download=/file.txt` and `POST /ufse`, for host/browser SD content work.
+
+For this board, the tested SD SPI pins were GPIO21 MOSI, GPIO38 SCK, and GPIO39 MISO. Chip-select must still match the board/template wiring.
+
+## Full Tool Catalog
+
+Full TasmoClaw currently includes these ESP-Claw-inspired capabilities:
+
+- skills: list, activate, deactivate, and reset capability groups;
+- memory: local FlashFS memory read/search/write/append/forget;
+- scheduler: one-shot and interval schedules with manual trigger and periodic `every_second()` tick;
+- router: event rules that call tools, run commands, append memory, display text, or emit nested events;
+- web search: Brave cloud or SearXNG local/LAN;
+- HTTP bridge: GET/POST calls to local/cloud services;
+- image inspection: OpenAI-compatible `image_url` vision endpoint, with clear stock-firmware limits for SD/base64 file uploads;
+- files/scripts: FlashFS file copy/move/delete plus reusable Berry script create/read/list/run.
 
 The config page also has a `Disable permission prompts` checkbox. When enabled, approval-gated tools run immediately. Keep it off for safer demos.
 
@@ -65,6 +256,54 @@ Default DeepSeek request settings are non-streaming:
 - `thinking`: omitted by default
 
 ## HTTPS Transport
+
+## Local MLX-LM Example
+
+On a Mac, MLX-LM can expose an OpenAI-compatible endpoint that TasmoClaw can call over plain HTTP:
+
+```bash
+python3 -m venv ~/mlx-agent
+source ~/mlx-agent/bin/activate
+pip install -U mlx-lm openai
+mlx_lm.server \
+  --model mlx-community/Qwen3-8B-4bit \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --chat-template-args '{"enable_thinking":false}'
+```
+
+The `enable_thinking:false` template argument is useful for Qwen3-style models because it makes the OpenAI response return normal `message.content` instead of only reasoning text.
+
+Quick test from the Mac:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"mlx-community/Qwen3-8B-4bit","messages":[{"role":"user","content":"Reply exactly: MLX local ok."}],"max_tokens":80,"stream":false}'
+```
+
+Then configure TasmoClaw with `http://<mac-lan-ip>:8080/v1/chat/completions`. Use the same idea for Ollama with `http://<mac-lan-ip>:11434/v1/chat/completions`.
+
+### Qwen3 8B MLX-LM tool-calling notes
+
+Qwen3 8B 4-bit through MLX-LM is usable for some TasmoClaw demos, but it is not as reliable as DeepSeek for the custom text-based tool protocol yet.
+
+Observed working prompts on the test board:
+
+- `Read the current device status and answer with heap and wifi IP.` called `device_read` and returned Wi-Fi, heap, ADC, SHTC3, power, UFS, and SD state.
+- `What are all current sensor values?` called `sensor_read` and returned ADC, SHTC3 temperature/humidity, and I2C scan.
+- `Read the current power state.` called `power_read` and returned `POWER1=ON, POWER2=ON`.
+- `List the current Tasmota rules.` called `rule_control` and returned Rule1/Rule2/Rule3.
+- `List the files on flash.` called `file_list` and returned FlashFS files.
+- `Read all sensor values, then read power state...` worked by choosing the aggregate `device_read` tool.
+
+Observed failures and cautions:
+
+- One explicit `Status 0` command-read test hit `HTTP -11` read timeout through the local MLX-LM/webclient path.
+- `Read flash:/display.ini...` was misclassified as `display_control` and sent the prompt text to `DisplayText` instead of using `file_read`.
+- Qwen may ignore exact-output instructions or select surprising tools. Keep approval prompts enabled for actions when testing local models.
+
+Recommendation: use Qwen/MLX-LM for read-only status, sensor, power, rules, and file-list demos. Use DeepSeek for broader tool use, file reads/writes, Berry programming, rule changes, display/audio actions, or any unattended run until TasmoClaw has a stricter local tool-router/validator layer.
 
 TasmoClaw defaults to the standard Tasmota Berry `webclient()` HTTPS path. This is the route that should make the `.tapp` usable by regular Tasmota users without firmware changes.
 
@@ -130,7 +369,7 @@ The board SD slot is wired as 1-bit SDIO:
 - `GPIO38`: SDIO CLK
 - `GPIO39`: SDIO D0
 
-With `USE_SDCARD` and those template functions, `UfsType` should report `[1,3]`: SD card plus FlashFS. TasmoClaw exposes native SD helpers through the firmware bridge so SD files are accessible even when Berry `open()` is using the flash-backed filesystem.
+With `USE_SDCARD` and those template functions, `UfsType` should report `[1,3]`: SD card plus FlashFS. On upstream firmware, TasmoClaw first uses standard Tasmota UFS commands such as `UfsList` plus Berry `open()` for explicit `flash:/...` and `sd:/...` paths. Optional native helpers named `tasmo_ufs_list`, `tasmo_ufs_read`, and `tasmo_ufs_write` are used only when the firmware provides them; they are not required for normal upstream compatibility.
 
 Filesystem paths can be made explicit with prefixes:
 
@@ -142,7 +381,7 @@ The Tasmota Manage File System page has a FlashFS/SDCard selector and Copy/Move 
 
 The onboard temperature/humidity sensor is SHTC3 on I2C address `0x70`. Enable `USE_SHT3X`; `Status 8` should include `SHTC3` temperature, humidity, and dew point. TasmoClaw's `sensor_read` and `device_read` tools expose those readings.
 
-Native SD/UFS diagnostic from Berry:
+SD/UFS diagnostic from Berry when native helpers are available:
 
 ```berry
 print(tasmo_ufs_list("sd:/"))
@@ -220,14 +459,12 @@ TasmoClaw exposes these tools to DeepSeek. Read-only tools can run immediately; 
 | `network_control` | Read/change Wi-Fi, hostname, IP, NTP, timezone. | `Show hostname and Wi-Fi state.` |
 | `system_control` | Run `State`, `Status`, `Event`, `Backlog`, module/template, or confirmed restart. | `Trigger event hello=1.` |
 | `timer_control` | Read/set `Timers`, `TimerN`, `RuleTimerN`, and `PulseTimeN`. | `Start RuleTimer1 for 5 seconds.` |
-| `filesystem_control` | Run UFS status/list/mkdir/delete/rename/run commands. | `List sd:/ with UfsList.` |
+| `filesystem_control` | Run stock UFS status/list/delete/rename/run commands. | `List sd:/ with UfsList.` |
 | `file_list` | List files with `sd:`/`flash:` prefixes. | `List sd:/ files.` |
-| `file_read` | Read text files up to 16 KB from SD or FlashFS. | `Read sd:/hello_world.txt.` |
-| `file_write` | Write exact text content to SD or FlashFS. | `Write hello world to sd:/hello_world.txt.` |
+| `file_read` | Read text files up to 16 KB from FlashFS. Stock Berry cannot read SD file contents. | `Read flash:/hello_world.txt.` |
+| `file_write` | Write exact text content to FlashFS. Stock Berry cannot write SD file contents. | `Write hello world to flash:/hello_world.txt.` |
 | `ufs_info` | Read UFS type, size, free space, and FlashFS/SD root listings. | `Is the SD card mounted?` |
 | `sd_markdown_list` | List SD-card markdown/memory files. | `List SD card content.` |
-| `sd_markdown_read` | Read a named SD markdown/text file. | `Read memory.md.` |
-| `sd_markdown_write` | Write SD markdown/text memory files. | `Create agent.md on the SD card.` |
 | `berry_program_write` | Write a Berry `.be` program file. | `Create a Hello World Berry file.` |
 | `berry_program_read` | Read a Berry program. | `Read hello_world.be.` |
 | `berry_program_run` / `berry_load` | Load and run a Berry file. | `Run the hello_world Berry program.` |
@@ -297,13 +534,13 @@ or an approval request:
 
 ## Storage Files
 
-TasmoClaw prefers real filesystem JSON files:
+Full TasmoClaw prefers real filesystem JSON files:
 
 - `/tasmoclaw_config.json`
 - `/tasmoclaw_history.json`
 - `/tasmoclaw_pending.json`
 
-If file storage fails, the store attempts a `persist` fallback and returns/logs the storage error where possible.
+Full TasmoClaw also mirrors those values through Tasmota Berry `persist` as a fallback, using keys such as `tasmoclaw_config_json`, `tasmoclaw_history_json`, and `tasmoclaw_pending_json`. Lite uses `persist` directly with the `tasmoclaw_lite_config_json` key. If file storage fails, the store attempts the `persist` value and returns/logs the storage error where possible.
 
 ## Generated Berry Workspace
 
@@ -412,9 +649,11 @@ git diff --binary --stat
 cd tools/tasmoclaw_tapp
 python3 build_tapp.py
 unzip -l dist/tasmoclaw.tapp
+unzip -l dist/tasmoclaw_lite.tapp
+find dist/tasmota_extensions/raw -maxdepth 2 -type f | sort
 ```
 
-The archive should contain only:
+The full archive should contain only:
 
 - `autoexec.be`
 - `tasmoclaw.be`
@@ -425,3 +664,7 @@ The archive should contain only:
 - `tasmoclaw_util.be`
 - `tasmoclaw_prompt.be`
 - `tasmoclaw_commands.be`
+
+The Lite archive should contain `autoexec.be`, `tasmoclaw_lite.be`, `tasmoclaw_common.be`, and `tasmoclaw_ui.be`.
+
+The extension raw folders should each contain `manifest.json`, extension-style `autoexec.be`, and the same Berry modules as the matching standalone variant. In a Tasmota-Extensions checkout, `python3 gen.py` should build `TasmoClaw_Lite.tapp` and `TasmoClaw_Full.tapp` without compression.

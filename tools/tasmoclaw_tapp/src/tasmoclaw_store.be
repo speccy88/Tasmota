@@ -1,7 +1,9 @@
 import persist
 import json
 import path
-import tasmoclaw_util
+import introspect
+
+var tasmoclaw_util = introspect.module('tasmoclaw_util')
 
 class TasmoClawStore
   var config_file, history_file, pending_file, workspace_fallback, last_error
@@ -33,7 +35,15 @@ class TasmoClawStore
       'prompt_mode':'compact',
       'context_byte_limit':5200,
       'auto_approve_tools':false,
+      'tested_models':[],
       'workspace':'/tasmoclaw/',
+      'search_provider':'searxng',
+      'brave_api_key':'',
+      'brave_proxy_url':'',
+      'searxng_url':'http://127.0.0.1:8888/search',
+      'vision_api_url':'',
+      'vision_model':'',
+      'vision_api_key':'',
       'system_extra':''
     }
   end
@@ -41,7 +51,6 @@ class TasmoClawStore
   def read_file(file)
     try
       if path.exists(file) != true
-        tasmoclaw_util.debug('store read missing file=' + str(file))
         return nil
       end
       var f = open(file, 'r')
@@ -86,9 +95,102 @@ class TasmoClawStore
     end
   end
 
+  def persist_key(file)
+    if file == self.config_file
+      return 'tasmoclaw_config_json'
+    elif file == self.history_file
+      return 'tasmoclaw_history_json'
+    elif file == self.pending_file
+      return 'tasmoclaw_pending_json'
+    end
+    return 'tasmoclaw_data_json'
+  end
+
+  def persist_read(file)
+    try
+      return persist.find(self.persist_key(file), nil)
+    except .. as e,m
+      tasmoclaw_util.debug('store persist_read failed key=' + str(self.persist_key(file)) + ' error=' + str(m))
+      return nil
+    end
+  end
+
+  def persist_write(file, data)
+    try
+      persist.setmember(self.persist_key(file), data)
+      persist.save(true)
+      return {'ok':true}
+    except .. as e,m
+      tasmoclaw_util.debug('store persist_write failed key=' + str(self.persist_key(file)) + ' error=' + str(m))
+      return {'ok':false,'error':str(m)}
+    end
+  end
+
+  def persist_delete(file)
+    try
+      persist.remove(self.persist_key(file))
+      persist.save(true)
+      return {'ok':true}
+    except .. as e,m
+      tasmoclaw_util.debug('store persist_delete failed key=' + str(self.persist_key(file)) + ' error=' + str(m))
+      return {'ok':false,'error':str(m)}
+    end
+  end
+
+  def is_list_like(value)
+    if value == nil
+      return false
+    end
+
+    try
+      var push_fn = value.push
+      return push_fn != nil
+    except .. as e,m
+    end
+
+    return false
+  end
+
+  def safe_find(value, key)
+    if value == nil
+      return nil
+    end
+
+    try
+      return value.find(key)
+    except .. as e,m
+    end
+
+    return nil
+  end
+
+  def history_list(value)
+    if self.is_list_like(value)
+      return value
+    end
+
+    for k:['history','messages','items','result']
+      var nested = self.safe_find(value, k)
+      if self.is_list_like(nested)
+        return nested
+      end
+    end
+
+    var nested_result = self.safe_find(value, 'result')
+    for k2:['history','messages','items']
+      var nested2 = self.safe_find(nested_result, k2)
+      if self.is_list_like(nested2)
+        return nested2
+      end
+    end
+
+    return nil
+  end
+
   def load_config()
     tasmoclaw_util.debug('store load_config start')
     var cfg = self.default_config()
+    var loaded = false
 
     try
       var raw = self.read_file(self.config_file)
@@ -97,13 +199,16 @@ class TasmoClawStore
         for k:obj.keys()
           cfg[k]=obj[k]
         end
+        loaded = true
       end
     except .. as e,m
       self.last_error = 'config parse failed: ' + str(m)
       tasmoclaw_util.debug('store config parse failed; trying persist error=' + str(m))
+    end
 
+    if !loaded
       try
-        var raw2 = persist.get(self.config_file)
+        var raw2 = self.persist_read(self.config_file)
         if raw2 != nil
           var obj2 = json.load(raw2)
           for k:obj2.keys()
@@ -124,40 +229,46 @@ class TasmoClawStore
     var r = self.write_file(self.config_file, tasmoclaw_util.json_encode(cfg))
 
     if !r['ok']
-      try
-        persist.set(self.config_file, tasmoclaw_util.json_encode(cfg))
+      var p = self.persist_write(self.config_file, tasmoclaw_util.json_encode(cfg))
+      if p['ok']
         tasmoclaw_util.debug('store save_config used persist fallback warning=' + str(r['error']))
         return {'ok':true,'fallback':'persist','warning':r['error']}
-      except .. as e,m
-        tasmoclaw_util.debug('store save_config persist fallback failed: ' + str(m))
       end
+    else
+      self.persist_write(self.config_file, tasmoclaw_util.json_encode(cfg))
     end
 
     return r
   end
 
   def load_history()
+    var tried_file = false
     try
       var raw = self.read_file(self.history_file)
       if raw != nil
+        tried_file = true
         var h = json.load(raw)
-        if h != nil && type(h) == 'list'
-          tasmoclaw_util.debug('store load_history count=' + str(size(h)))
-          return h
+        var hl = self.history_list(h)
+        if hl != nil
+          tasmoclaw_util.debug('store load_history count=' + str(size(hl)))
+          return hl
         end
         tasmoclaw_util.debug('store load_history ignored non-list history file')
       end
     except .. as e,m
       self.last_error = 'history parse failed: ' + str(m)
       tasmoclaw_util.debug('store history parse failed; trying persist error=' + str(m))
+    end
 
+    if !tried_file
       try
-        var raw2 = persist.get(self.history_file)
+        var raw2 = self.persist_read(self.history_file)
         if raw2 != nil
           var h2 = json.load(raw2)
-          if h2 != nil && type(h2) == 'list'
-            tasmoclaw_util.debug('store history loaded from persist count=' + str(size(h2)))
-            return h2
+          var hl2 = self.history_list(h2)
+          if hl2 != nil
+            tasmoclaw_util.debug('store history loaded from persist count=' + str(size(hl2)))
+            return hl2
           end
           tasmoclaw_util.debug('store history persist ignored non-list value')
         end
@@ -174,43 +285,50 @@ class TasmoClawStore
     var r = self.write_file(self.history_file, tasmoclaw_util.json_encode(h))
 
     if !r['ok']
-      try
-        persist.set(self.history_file, tasmoclaw_util.json_encode(h))
+      var p = self.persist_write(self.history_file, tasmoclaw_util.json_encode(h))
+      if p['ok']
         tasmoclaw_util.debug('store save_history used persist fallback warning=' + str(r['error']))
         return {'ok':true,'fallback':'persist','warning':r['error']}
-      except .. as e,m
-        tasmoclaw_util.debug('store save_history persist fallback failed: ' + str(m))
       end
+    else
+      self.persist_write(self.history_file, tasmoclaw_util.json_encode(h))
     end
 
     return r
   end
 
   def load_pending()
+    var tried_file = false
     try
       var raw = self.read_file(self.pending_file)
 
       if raw != nil && size(raw) > 0
+        tried_file = true
         var p = json.load(raw)
 
-        if p == nil || type(p) != 'map'
+        if p == nil || self.safe_find(p, 'tool') == nil
           tasmoclaw_util.debug('store load_pending ignored non-map pending')
           return nil
         end
 
-        tasmoclaw_util.debug('store load_pending found tool=' + str(p.find('tool')))
+        tasmoclaw_util.debug('store load_pending found tool=' + str(self.safe_find(p, 'tool')))
         return p
       end
     except .. as e,m
       self.last_error = 'pending parse failed: ' + str(m)
       tasmoclaw_util.debug('store pending parse failed; trying persist error=' + str(m))
+    end
 
+    if !tried_file
       try
-        var raw2 = persist.get(self.pending_file)
+        var raw2 = self.persist_read(self.pending_file)
         if raw2 != nil
           var p2 = json.load(raw2)
-          tasmoclaw_util.debug('store pending loaded from persist')
-          return p2
+          if p2 != nil && self.safe_find(p2, 'tool') != nil
+            tasmoclaw_util.debug('store pending loaded from persist')
+            return p2
+          end
+          tasmoclaw_util.debug('store pending persist ignored non-map value')
         end
       except .. as e2,m2
         tasmoclaw_util.debug('store pending persist fallback failed: ' + str(m2))
@@ -225,13 +343,13 @@ class TasmoClawStore
       var r = self.remove_file(self.pending_file)
 
       if !r['ok']
-        try
-          persist.remove(self.pending_file)
+        var pdel = self.persist_delete(self.pending_file)
+        if pdel['ok']
           tasmoclaw_util.debug('store save_pending remove used persist fallback warning=' + str(r['error']))
           return {'ok':true,'fallback':'persist','warning':r['error']}
-        except .. as e,m
-          tasmoclaw_util.debug('store save_pending remove persist fallback failed: ' + str(m))
         end
+      else
+        self.persist_delete(self.pending_file)
       end
 
       return r
@@ -239,13 +357,13 @@ class TasmoClawStore
       var r2 = self.write_file(self.pending_file, tasmoclaw_util.json_encode(p))
 
       if !r2['ok']
-        try
-          persist.set(self.pending_file, tasmoclaw_util.json_encode(p))
+        var pw = self.persist_write(self.pending_file, tasmoclaw_util.json_encode(p))
+        if pw['ok']
           tasmoclaw_util.debug('store save_pending used persist fallback warning=' + str(r2['error']))
           return {'ok':true,'fallback':'persist','warning':r2['error']}
-        except .. as e2,m2
-          tasmoclaw_util.debug('store save_pending persist fallback failed: ' + str(m2))
         end
+      else
+        self.persist_write(self.pending_file, tasmoclaw_util.json_encode(p))
       end
 
       return r2
@@ -267,6 +385,14 @@ class TasmoClawStore
 
       if path.exists('/tasmoclaw/logs') != true
         path.mkdir('/tasmoclaw/logs')
+      end
+
+      if path.exists('/tasmoclaw/scripts') != true
+        path.mkdir('/tasmoclaw/scripts')
+      end
+
+      if path.exists('/tasmoclaw/memory') != true
+        path.mkdir('/tasmoclaw/memory')
       end
 
       tasmoclaw_util.debug('store ensure_workspace done fallback=false')
@@ -294,4 +420,5 @@ tasmoclaw_store.create = def()
   return TasmoClawStore()
 end
 
+global.tasmoclaw_store_mod = tasmoclaw_store
 return tasmoclaw_store

@@ -1,4 +1,7 @@
-dist/
+dist/*
 *.tapp
 *.zip
 *.gz
+!dist/
+!dist/tasmoclaw.tapp
+!dist/tasmoclaw_lite.tapp
