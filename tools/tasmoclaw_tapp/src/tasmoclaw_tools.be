@@ -24,6 +24,10 @@ class TasmoClawTools
       'memory_append':{'approval':true,'desc':'Append a timestamped note to a TasmoClaw local memory file on FlashFS'},
       'memory_forget':{'approval':true,'desc':'Delete a TasmoClaw local memory file'},
       'profile_memory':{'approval':true,'desc':'Read or update the local profile/personality memory for room names, relay names, and user preferences'},
+      'agent_file_list':{'approval':false,'desc':'List TasmoClaw flash agent files AGENTS.md, SOUL.md, IDENTITY.md, USER.md, and MEMORY.md'},
+      'agent_file_read':{'approval':false,'desc':'Read one TasmoClaw flash agent file'},
+      'agent_file_write':{'approval':true,'desc':'Replace one TasmoClaw flash agent file'},
+      'agent_file_append':{'approval':true,'desc':'Append a short note to one TasmoClaw flash agent file. For MEMORY.md, prefer rewriting a small curated summary with agent_file_write.'},
       'scheduler_list':{'approval':false,'desc':'List TasmoClaw schedules and runtime state'},
       'scheduler_get':{'approval':false,'desc':'Get one TasmoClaw schedule by id'},
       'scheduler_add':{'approval':true,'desc':'Add a once or interval schedule that emits router events'},
@@ -111,7 +115,7 @@ class TasmoClawTools
       'device':{'desc':'Sensors, power, rules, timers, display, LVGL, lights, MQTT, telemetry, and network','tools':['sensor_read','power_read','power_control','rule_control','rule_explain','timer_control','automation_builder','display_control','lvgl_control','dashboard_create','light_control','mqtt_control','telemetry_control','network_control','system_control','webcolor_control','berry_module_probe']},
       'files':{'desc':'FlashFS and stock UFS/SD listing, status, delete, rename, copy/move helpers','tools':['file_read','file_write','file_list','ufs_info','sd_markdown_list','filesystem_control','file_copy','file_move','file_delete']},
       'berry':{'desc':'Berry programs, reusable Berry skills, and script library','tools':['berry_program_read','berry_program_write','berry_program_run','berry_program_explain','berry_check','berry_console','berry_skill_template','berry_skill_create','berry_skill_run','berry_skill_explain','berry_load','berry_compile','script_list','script_read','script_create','script_run','rule_apply','rule_clear','display_message','create_demo_berry']},
-      'memory':{'desc':'Local FlashFS memory files for notes, profile, and long-term summaries','tools':['memory_read','memory_search','memory_write','memory_append','memory_forget','profile_memory']},
+      'memory':{'desc':'Local FlashFS memory files and markdown agent identity/instruction files','tools':['memory_read','memory_search','memory_write','memory_append','memory_forget','profile_memory','agent_file_list','agent_file_read','agent_file_write','agent_file_append']},
       'automation':{'desc':'Interval/once scheduler and event router rules','tools':['scheduler_list','scheduler_get','scheduler_add','scheduler_update','scheduler_remove','scheduler_enable','scheduler_disable','scheduler_trigger_now','scheduler_tick','router_rule_list','router_rule_get','router_rule_add','router_rule_update','router_rule_delete','router_emit']},
       'web':{'desc':'Direct Brave web search, HTTP bridge, and OpenAI-compatible image inspection','tools':['web_search','http_bridge_call','image_inspect']}
     }
@@ -290,7 +294,8 @@ class TasmoClawTools
       out += '- berry_program_* and berry_skill_*: read/write/run/explain Berry code; script_list/read/create/run for /tasmoclaw/scripts; berry_console/load/compile for approved code\n'
     end
     if self.skill_active('memory')
-      out += '- memory_read/search/write/append/forget: local FlashFS memory files such as memory.md, profile.md, notes.md\n'
+      out += '- memory_read/search/write/append/forget: local FlashFS memory files; agent_file_list/read/write/append for AGENTS.md, SOUL.md, IDENTITY.md, USER.md, MEMORY.md\n'
+      out += '  Keep MEMORY.md tiny and curated; prefer agent_file_write to replace it with a short stable summary instead of appending endlessly.\n'
     end
     if self.skill_active('automation')
       out += '- scheduler_*: once/interval schedules emit router events; router_rule_* and router_emit route events to tools or Tasmota commands\n'
@@ -461,6 +466,10 @@ class TasmoClawTools
     if name=='memory_append' return self.memory_append(args) end
     if name=='memory_forget' return self.memory_forget(args) end
     if name=='profile_memory' return self.profile_memory(args) end
+    if name=='agent_file_list' return self.agent_file_list(args) end
+    if name=='agent_file_read' return self.agent_file_read(args) end
+    if name=='agent_file_write' return self.agent_file_write(args) end
+    if name=='agent_file_append' return self.agent_file_append(args) end
     if name=='scheduler_list' return self.scheduler_list(args) end
     if name=='scheduler_get' return self.scheduler_get(args) end
     if name=='scheduler_add' return self.scheduler_add(args) end
@@ -806,6 +815,73 @@ class TasmoClawTools
       return self.memory_forget({'name':name})
     end
     return self.memory_append({'name':name,'content':content})
+  end
+
+  def agent_file_path(args)
+    if self.store == nil
+      return nil
+    end
+    var name = self.first_value(args, ['name','file','path'], 'MEMORY.md')
+    return self.store.agent_file_path(name)
+  end
+
+  def agent_file_list(args)
+    var files = []
+    if self.store == nil
+      return {'ok':false,'error':'store unavailable'}
+    end
+    self.store.ensure_agent_files()
+    for name:self.store.agent_file_names()
+      var p = self.store.agent_file_path(name)
+      var byte_count = 0
+      if p != nil
+        try
+          var raw = self.store.read_file(p)
+          if raw != nil
+            byte_count = size(raw)
+          end
+        except .. as e,m
+        end
+      end
+      files.push({'name':name,'path':p,'bytes':byte_count})
+    end
+    return {'ok':true,'files':files}
+  end
+
+  def agent_file_read(args)
+    var p = self.agent_file_path(args)
+    if p == nil
+      return {'ok':false,'error':'unknown agent file; use AGENTS.md, SOUL.md, IDENTITY.md, USER.md, or MEMORY.md'}
+    end
+    var maxb = self.first_value(args, ['max_bytes','limit'], 8192)
+    return self.file_read({'path':'flash:' + p,'max_bytes':maxb})
+  end
+
+  def agent_file_write(args)
+    var p = self.agent_file_path(args)
+    if p == nil
+      return {'ok':false,'error':'unknown agent file; use AGENTS.md, SOUL.md, IDENTITY.md, USER.md, or MEMORY.md'}
+    end
+    var content = self.first_value(args, ['content','text','body'], '')
+    return self.file_write({'path':'flash:' + p,'content':content})
+  end
+
+  def agent_file_append(args)
+    var p = self.agent_file_path(args)
+    if p == nil
+      return {'ok':false,'error':'unknown agent file; use AGENTS.md, SOUL.md, IDENTITY.md, USER.md, or MEMORY.md'}
+    end
+    var note = self.first_value(args, ['content','text','note','body'], '')
+    if note == nil || note == ''
+      return {'ok':false,'error':'missing note/content'}
+    end
+    var existing = ''
+    var rr = self.file_read({'path':'flash:' + p,'max_bytes':12000})
+    if rr.find('ok') == true
+      existing = str(rr.find('result'))
+    end
+    var sep = existing == '' ? '' : '\n\n'
+    return self.file_write({'path':'flash:' + p,'content':existing + sep + '- ' + str(self.now_seconds()) + ': ' + str(note) + '\n'})
   end
 
   def schedule_file()

@@ -82,7 +82,7 @@ var tasmoclaw_prompt = tcl_load_module('tasmoclaw_prompt')
 var _driver = nil
 
 class TasmoClawDriver : Driver
-  var store, tools, llm, ui, cfg, history, pending, last_schedule_tick
+  var store, tools, llm, ui, cfg, history, pending, last_schedule_tick, agent_context
 
   def init()
     tasmoclaw_util.debug('driver init start')
@@ -103,6 +103,7 @@ class TasmoClawDriver : Driver
     end
     self.pending = self.store.load_pending()
     self.last_schedule_tick = 0
+    self.agent_context = self.store.agent_context(1800)
 
     self.ensure_cmds()
     tasmoclaw_util.debug('driver init done history=' + str(size(self.history)) + ' pending=' + str(self.pending != nil))
@@ -142,6 +143,17 @@ class TasmoClawDriver : Driver
 
   def cmd_tick()
     tasmota.resp_cmnd(tasmoclaw_util.json_encode(self.tools.scheduler_tick({'source':'command'})))
+  end
+
+  def refresh_agent_context()
+    self.agent_context = self.store.agent_context(1800)
+    tasmoclaw_util.debug('agent context refreshed bytes=' + str(self.agent_context == nil ? 0 : size(self.agent_context)))
+  end
+
+  def refresh_agent_context_if_needed(tool)
+    if tool == 'agent_file_write' || tool == 'agent_file_append'
+      self.refresh_agent_context()
+    end
   end
 
   def every_second()
@@ -621,6 +633,7 @@ class TasmoClawDriver : Driver
       end
 
       var direct_result = self.tools.run(direct['tool'], direct['args'])
+      self.refresh_agent_context_if_needed(direct['tool'])
       var direct_trace = self.format_tool_trace(direct['tool'], direct_result)
       var direct_content = self.format_tool_answer(user, direct['tool'], direct_result)
       if direct['tool'] == 'berry_program_explain' && direct_result.find('ok') == true
@@ -785,6 +798,7 @@ class TasmoClawDriver : Driver
             end
 
             var fallback_result = self.tools.run(fallback['tool'], fallback['args'])
+            self.refresh_agent_context_if_needed(fallback['tool'])
             var fallback_trace = self.format_tool_trace(fallback['tool'], fallback_result)
             c = self.format_tool_answer(user, fallback['tool'], fallback_result)
             tasmoclaw_util.debug('chat fallback tool result tool=' + str(fallback['tool']) + ' ok=' + str(fallback_result.find('ok')))
@@ -865,6 +879,7 @@ class TasmoClawDriver : Driver
       end
 
       var tr=self.tools.run(tc['tool'],tc['args'])
+      self.refresh_agent_context_if_needed(tc['tool'])
       tasmoclaw_util.debug('chat tool finished tool=' + str(tc['tool']) + ' ok=' + str(tr.find('ok')) + ' error=' + str(tr.find('error')))
       if self.tools.requires_approval_for(tc['tool'], tc['args'])
         action_tool_seen = true
@@ -917,6 +932,7 @@ class TasmoClawDriver : Driver
       end
 
       var final_result = self.tools.run(final_fallback['tool'], final_fallback['args'])
+      self.refresh_agent_context_if_needed(final_fallback['tool'])
       var final_trace = self.format_tool_trace(final_fallback['tool'], final_result)
       var final_content = self.format_tool_answer(user, final_fallback['tool'], final_result)
       tasmoclaw_util.debug('chat retry-limit fallback tool=' + str(final_fallback['tool']) + ' ok=' + str(final_result.find('ok')))
@@ -1072,6 +1088,10 @@ class TasmoClawDriver : Driver
     if tool == 'memory_append' return true end
     if tool == 'memory_forget' return true end
     if tool == 'profile_memory' return true end
+    if tool == 'agent_file_list' return true end
+    if tool == 'agent_file_read' return true end
+    if tool == 'agent_file_write' return true end
+    if tool == 'agent_file_append' return true end
     if tool == 'device_doctor' return true end
     if tool == 'board_bringup_wizard' return true end
     if tool == 'automation_builder' return true end
@@ -1589,6 +1609,12 @@ class TasmoClawDriver : Driver
         return 'I updated profile memory at ' + str(result.find('path')) + '.'
       end
       return 'Profile memory result:' + nl + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result), 700)
+    elif tool == 'agent_file_list'
+      return 'Agent files:' + nl + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result.find('files')), 900)
+    elif tool == 'agent_file_read'
+      return 'Agent file content:' + nl + str(result.find('result'))
+    elif tool == 'agent_file_write' || tool == 'agent_file_append'
+      return 'I updated agent file ' + str(result.find('path')) + '.'
     elif tool == 'device_doctor'
       return str(result.find('summary')) + nl + tasmoclaw_util.preview(tasmoclaw_util.json_encode(result.find('checks')), 1000)
     elif tool == 'board_bringup_wizard'
@@ -1680,12 +1706,12 @@ class TasmoClawDriver : Driver
   def base_messages()
     var mode = self.cfg.find('prompt_mode')
     var tool_lines = mode == 'full' ? self.tools.tool_lines() : self.tools.tool_lines_compact()
-    var system_prompt = mode == 'full' ? tasmoclaw_prompt.build(tool_lines,self.cfg['system_extra']) : tasmoclaw_prompt.build_compact(tool_lines,self.cfg['system_extra'])
+    var system_prompt = mode == 'full' ? tasmoclaw_prompt.build(tool_lines,self.cfg['system_extra'],self.agent_context) : tasmoclaw_prompt.build_compact(tool_lines,self.cfg['system_extra'],self.agent_context)
     if mode == 'full' && size(system_prompt) > 6500
       tasmoclaw_util.debug('base_messages compact fallback prompt_bytes=' + str(size(system_prompt)))
       mode = 'compact'
       tool_lines = self.tools.tool_lines_compact()
-      system_prompt = tasmoclaw_prompt.build_compact(tool_lines,self.cfg['system_extra'])
+      system_prompt = tasmoclaw_prompt.build_compact(tool_lines,self.cfg['system_extra'],self.agent_context)
     end
     var budget = self.cfg.find('context_byte_limit')
     if budget == nil || budget < 1200
@@ -1743,6 +1769,9 @@ class TasmoClawDriver : Driver
     var prompt = 'You are TasmoClaw, a concise helpful assistant running inside Tasmota.'
     prompt += ' Answer naturally and briefly.'
     prompt += ' For live device state, files, SD, rules, sensors, power, display, LVGL, Berry files, or Tasmota command output, ask for an explicit device action.'
+    if self.agent_context != nil && size(self.agent_context) > 0
+      prompt += '\n' + self.agent_context
+    end
     var msgs = [{'role':'system','content':prompt}]
 
     var selected = []
@@ -2192,6 +2221,21 @@ class TasmoClawDriver : Driver
     return i != nil && i >= 0
   end
 
+  def agent_file_from_text(s)
+    if self.text_has(s, 'agents.md') || self.text_has(s, 'agents')
+      return 'AGENTS.md'
+    elif self.text_has(s, 'soul.md') || self.text_has(s, 'soul')
+      return 'SOUL.md'
+    elif self.text_has(s, 'identity.md') || self.text_has(s, 'identity')
+      return 'IDENTITY.md'
+    elif self.text_has(s, 'user.md') || self.text_has(s, 'user file')
+      return 'USER.md'
+    elif self.text_has(s, 'memory.md')
+      return 'MEMORY.md'
+    end
+    return ''
+  end
+
   def day_mask_from_text(s)
     if self.text_has(s, 'weekend')
       return 'S-----S'
@@ -2290,6 +2334,28 @@ class TasmoClawDriver : Driver
         content = user
       end
       return {'tool':'profile_memory','args':{'action':'append','content':content},'reason':'Update TasmoClaw profile memory.'}
+    end
+
+    var agent_file = self.agent_file_from_text(u)
+    if agent_file != ''
+      if self.text_has(u, 'list') || self.text_has(u, 'show files') || self.text_has(u, 'agent files')
+        return {'tool':'agent_file_list','args':{},'reason':'List TasmoClaw flash agent files.'}
+      end
+      if self.text_has(u, 'write') || self.text_has(u, 'replace') || self.text_has(u, 'set')
+        var afc = self.text_after_marker(user, ['with content ', 'with the content ', 'as ', 'to '])
+        if afc == ''
+          afc = user
+        end
+        return {'tool':'agent_file_write','args':{'name':agent_file,'content':afc},'reason':'Replace a TasmoClaw flash agent file.'}
+      end
+      if self.text_has(u, 'append') || self.text_has(u, 'add') || self.text_has(u, 'note')
+        var afn = self.text_after_marker(user, ['append ', 'add ', 'note ', 'that '])
+        if afn == ''
+          afn = user
+        end
+        return {'tool':'agent_file_append','args':{'name':agent_file,'content':afn},'reason':'Append a short note to a TasmoClaw flash agent file.'}
+      end
+      return {'tool':'agent_file_read','args':{'name':agent_file},'reason':'Read a TasmoClaw flash agent file.'}
     end
 
     var has_sequence_request = false
@@ -3219,6 +3285,7 @@ class TasmoClawDriver : Driver
     self.store.save_pending(nil)
 
     var r=self.tools.run(p['tool'],p['args'])
+    self.refresh_agent_context_if_needed(p['tool'])
     tasmoclaw_util.debug('api approve tool result tool=' + str(p.find('tool')) + ' ok=' + str(r.find('ok')) + ' error=' + str(r.find('error')))
 
     var content = self.format_tool_answer(str(p.find('reason')), p['tool'], r)

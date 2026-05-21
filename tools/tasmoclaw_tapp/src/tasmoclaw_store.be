@@ -45,6 +45,42 @@ class TasmoClawStore
     }
   end
 
+  def agent_file_names()
+    return ['AGENTS.md','SOUL.md','IDENTITY.md','USER.md','MEMORY.md']
+  end
+
+  def agent_file_path(name)
+    var n = name == nil || name == '' ? 'MEMORY.md' : str(name)
+    n = string.replace(n, '/', '')
+    n = string.replace(n, '\\', '')
+    n = string.replace(n, '..', '')
+    if string.find(n, '.') == nil
+      n += '.md'
+    end
+    var lower = string.tolower(n)
+    for f:self.agent_file_names()
+      if lower == string.tolower(f)
+        return self.workspace_fallback ? '/' + f : '/tasmoclaw/' + f
+      end
+    end
+    return nil
+  end
+
+  def default_agent_file(name)
+    if name == 'AGENTS.md'
+      return '# AGENTS.md\n\n- Use tools before guessing when the request depends on live Tasmota state, files, rules, sensors, power, web search, or command output.\n- Prefer structured TasmoClaw tools over raw commands.\n- Keep workflows short: inspect, act, verify, summarize.\n- Finish requested multi-step work when possible.\n- Store durable facts in MEMORY.md and user preferences in USER.md.\n'
+    elif name == 'SOUL.md'
+      return '# SOUL.md\n\nBe funny and concise.\n'
+    elif name == 'IDENTITY.md'
+      return '# IDENTITY.md\n\nName: Charlie\nEmoji: \xF0\x9F\x90\xB6\nRole: Tasmota expert\n'
+    elif name == 'USER.md'
+      return '# USER.md\n\nName: Fred\nRole: Engineer\n'
+    elif name == 'MEMORY.md'
+      return '# MEMORY.md\n\nKeep this file very small. Curate stable facts only; rewrite or remove stale notes instead of growing the file.\n\n- Keep TasmoClaw Full active on the ESP32-S3 PSRAM board after maintenance.\n- Prefer stock firmware-compatible features unless Fred explicitly asks otherwise.\n'
+    end
+    return ''
+  end
+
   def read_file(file)
     try
       if path.exists(file) != true
@@ -256,6 +292,48 @@ class TasmoClawStore
     return history
   end
 
+  def ensure_agent_files()
+    for name:self.agent_file_names()
+      var p = self.agent_file_path(name)
+      if p != nil
+        try
+          if path.exists(p) != true
+            self.write_file(p, self.default_agent_file(name))
+          end
+        except .. as e,m
+          tasmoclaw_util.debug('store ensure_agent_files failed file=' + str(name) + ' error=' + str(m))
+        end
+      end
+    end
+  end
+
+  def agent_context(max_bytes)
+    if max_bytes == nil || max_bytes < 1
+      max_bytes = 1800
+    end
+    var out = ''
+    for name:self.agent_file_names()
+      if size(out) >= max_bytes
+        break
+      end
+      var p = self.agent_file_path(name)
+      if p != nil
+        var raw = self.read_file(p)
+        if raw != nil && size(raw) > 0
+          var header = '\n\n### ' + name + '\n'
+          var remaining = max_bytes - size(out) - size(header)
+          if remaining > 80
+            out += header + tasmoclaw_util.preview(raw, remaining)
+          end
+        end
+      end
+    end
+    if out == ''
+      return ''
+    end
+    return 'TasmoClaw flash agent files:' + out
+  end
+
   def load_config()
     tasmoclaw_util.debug('store load_config start')
     var cfg = self.default_config()
@@ -459,6 +537,8 @@ class TasmoClawStore
         path.mkdir('/tasmoclaw/memory')
       end
 
+      self.ensure_agent_files()
+
       tasmoclaw_util.debug('store ensure_workspace done fallback=false')
       return {'ok':true,'fallback':false}
 
@@ -466,6 +546,7 @@ class TasmoClawStore
       self.workspace_fallback = true
       self.last_error = 'workspace mkdir failed: ' + str(m)
       tasmoclaw_util.debug('store ensure_workspace failed: ' + str(m))
+      self.ensure_agent_files()
 
       try
         tasmota.log('TasmoClaw: ' + self.last_error, 2)
