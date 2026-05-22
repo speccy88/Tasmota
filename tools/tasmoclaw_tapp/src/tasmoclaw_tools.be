@@ -294,7 +294,7 @@ class TasmoClawTools
       out += '- berry_program_* and berry_skill_*: read/write/run/explain Berry code; script_list/read/create/run for /tasmoclaw/scripts; berry_console/load/compile for approved code\n'
     end
     if self.skill_active('memory')
-      out += '- memory_read/search/write/append/forget: local FlashFS memory files; agent_file_list/read/write/append for AGENTS.md, SOUL.md, IDENTITY.md, USER.md, MEMORY.md\n'
+      out += '- memory_read/search/write/append/forget: local FlashFS memory files. Default memory.md maps to /tasmoclaw/MEMORY.md; agent_file_list/read/write/append manages AGENTS.md, SOUL.md, IDENTITY.md, USER.md, MEMORY.md\n'
       out += '  Keep MEMORY.md tiny and curated; prefer agent_file_write to replace it with a short stable summary instead of appending endlessly.\n'
     end
     if self.skill_active('automation')
@@ -719,6 +719,12 @@ class TasmoClawTools
   def memory_path(args)
     var name = self.first_value(args, ['name','file','path'], 'memory.md')
     var n = self.safe_memory_name(name)
+    if string.tolower(n) == 'memory.md' && self.store != nil
+      var ap = self.store.agent_file_path('MEMORY.md')
+      if ap != nil
+        return ap
+      end
+    end
     if self.store != nil && self.store.workspace_fallback
       return '/' + n
     end
@@ -771,6 +777,20 @@ class TasmoClawTools
       return {'ok':false,'error':'memory list failed: '+str(m),'path':base}
     end
     var hits = []
+    if self.store != nil
+      var mp = self.store.agent_file_path('MEMORY.md')
+      if mp != nil
+        var mr = self.file_read({'path':'flash:' + mp,'max_bytes':12000})
+        if mr.find('ok') == true
+          var mbody = str(mr.find('result'))
+          var mlower = string.tolower(mbody)
+          var mpi = string.find(mlower, q)
+          if mpi != nil && mpi >= 0
+            hits.push({'path':mp,'preview':tasmoclaw_util.preview(mbody, 500)})
+          end
+        end
+      end
+    end
     for item:entries
       var name = type(item) == 'string' ? item : str(item[0])
       if string.find(name, '.md') != nil && string.find(name, '.md') >= 0
