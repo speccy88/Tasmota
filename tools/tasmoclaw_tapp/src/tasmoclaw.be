@@ -1360,7 +1360,7 @@ class TasmoClawDriver : Driver
     var sr = self.llm.call_chat(cfg2, [
       {
         'role':'system',
-        'content':'You are Charlie, a funny but concise Tasmota expert. Summarize one web search result into a grounded answer. Do not add facts beyond the provided title, URL, and snippet.'
+        'content':'You are TasmoClaw, a concise embedded Tasmota assistant. Summarize one web search result into a grounded answer. Do not add facts beyond the provided title, URL, and snippet.'
       },
       {
         'role':'user',

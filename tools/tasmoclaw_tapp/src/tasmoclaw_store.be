@@ -70,13 +70,13 @@ class TasmoClawStore
     if name == 'AGENTS.md'
       return '# AGENTS.md\n\n- Use tools before guessing when the request depends on live Tasmota state, files, rules, sensors, power, web search, or command output.\n- Prefer structured TasmoClaw tools over raw commands.\n- Keep workflows short: inspect, act, verify, summarize.\n- Finish requested multi-step work when possible.\n- Store durable facts in MEMORY.md and user preferences in USER.md.\n'
     elif name == 'SOUL.md'
-      return '# SOUL.md\n\nBe funny and concise.\n'
+      return '# SOUL.md\n\nBe concise, practical, friendly, and lightly playful.\n'
     elif name == 'IDENTITY.md'
-      return '# IDENTITY.md\n\nName: Charlie\nEmoji: \xF0\x9F\x90\xB6\nRole: Tasmota expert\n'
+      return '# IDENTITY.md\n\nName: TasmoClaw\nEmoji: \xF0\x9F\xA6\x9E\nRole: Embedded Tasmota assistant\n'
     elif name == 'USER.md'
-      return '# USER.md\n\nName: Fred\nRole: Engineer\n'
+      return '# USER.md\n\nAdd stable user preferences, environment notes, and project context here.\n'
     elif name == 'MEMORY.md'
-      return '# MEMORY.md\n\nKeep this file very small. Curate stable facts only; rewrite or remove stale notes instead of growing the file.\n\n- Keep TasmoClaw Full active on the ESP32-S3 PSRAM board after maintenance.\n- Prefer stock firmware-compatible features unless Fred explicitly asks otherwise.\n'
+      return '# MEMORY.md\n\nKeep this file very small. Curate stable facts only; rewrite or remove stale notes instead of growing the file.\n\nAdd durable project facts and important decisions here.\n'
     end
     return ''
   end
