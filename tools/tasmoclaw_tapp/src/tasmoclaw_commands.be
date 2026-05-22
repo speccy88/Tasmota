@@ -1,3 +1,9 @@
+# Tasmota command builder and safety classifier.
+#
+# The LLM should prefer structured tools, but this module is the controlled
+# fallback for turning structured arguments into native Tasmota commands.  It
+# also marks commands as read-only or approval-required before execution.
+
 import string
 
 var tasmoclaw_commands = module("tasmoclaw_commands")
@@ -68,6 +74,8 @@ tasmoclaw_commands.strip_fs_prefix = def(p)
 end
 
 tasmoclaw_commands.families = def()
+  # Families are shown to the model and to users as a small command catalog.
+  # They cover the Tasmota command surface TasmoClaw knows how to build safely.
   return [
     {
       'id':'status',
@@ -181,6 +189,9 @@ tasmoclaw_commands.search = def(args)
 end
 
 tasmoclaw_commands.classify_command = def(command)
+  # Treat anything that writes config, toggles hardware, restarts, or hides
+  # inside Backlog as approval-required.  Bare status/config reads are allowed
+  # so users can inspect a device without extra clicks.
   if command == nil || command == ''
     return {'ok':false,'error':'missing command','safety':'dangerous','requires_approval':true}
   end
@@ -378,6 +389,8 @@ tasmoclaw_commands.timer_command = def(args)
 end
 
 tasmoclaw_commands.filesystem_command = def(args)
+  # Filesystem command building uses stock UFS command names only.  Do not add
+  # mkdir/rmdir here unless upstream Tasmota exposes those commands.
   var action = string.tolower(str(tasmoclaw_commands.first(args, ['action','mode'], 'list')))
   var p = tasmoclaw_commands.first(args, ['path','file','filename'], '')
   var p_kind = tasmoclaw_commands.fs_prefix_kind(p)
@@ -742,6 +755,8 @@ tasmoclaw_commands.berry_command = def(args)
 end
 
 tasmoclaw_commands.build = def(args)
+  # Main structured-command entrypoint.  Tools pass a family plus normalized
+  # args, and this returns the exact Tasmota command plus its safety class.
   if args == nil
     args = {}
   end

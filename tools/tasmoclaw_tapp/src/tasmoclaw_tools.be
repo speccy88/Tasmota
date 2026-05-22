@@ -1,3 +1,9 @@
+# Full TasmoClaw tool registry and implementations.
+#
+# Each public tool returns a normalized dictionary so the chat driver can feed
+# results back to the model and render a useful answer.  Mutating tools are
+# approval-gated by default; read-only tools can run immediately.
+
 import string
 import path
 import json
@@ -12,6 +18,9 @@ class TasmoClawTools
   def init(store)
     self.store = store
 
+    # This registry is both documentation and runtime policy.  The chat prompt
+    # is generated from these descriptions, and the approval flag is the default
+    # safety behavior unless requires_approval_for() can prove a read-only case.
     self.tool_defs = {
       'tasmota_status':{'approval':false,'desc':'Read memory/wifi/arch/sensors and Status 0'},
       'skill_list':{'approval':false,'desc':'List TasmoClaw capability skills and the currently active compact prompt skills'},
@@ -110,6 +119,9 @@ class TasmoClawTools
   end
 
   def skill_catalog()
+    # Skill groups let Full trim its prompt dynamically.  The tools stay loaded
+    # in Berry, but inactive groups are left out of the compact prompt so cloud
+    # HTTPS requests have a better chance of fitting stock webclient heap.
     return {
       'core':{'desc':'Core status, command safety, tool sequencing, and skill activation','tools':['skill_list','skill_activate','skill_deactivate','skill_reset','tasmota_status','tasmota_cmd_read','device_read','device_doctor','board_bringup_wizard','command_catalog_search','command_build','command_run','command_sequence_run','tool_sequence_run']},
       'device':{'desc':'Sensors, power, rules, timers, display, LVGL, lights, MQTT, telemetry, and network','tools':['sensor_read','power_read','power_control','rule_control','rule_explain','timer_control','automation_builder','display_control','lvgl_control','dashboard_create','light_control','mqtt_control','telemetry_control','network_control','system_control','webcolor_control','berry_module_probe']},
@@ -455,6 +467,9 @@ class TasmoClawTools
       args = {}
     end
 
+    # Explicit dispatch keeps Berry compatibility broad.  A table of closures
+    # would be shorter, but this form is easier to inspect on-device and avoids
+    # subtle captures when modules are unloaded/reloaded by Extension Manager.
     if name=='tasmota_status' return self.run_status(args) end
     if name=='skill_list' return self.skill_list(args) end
     if name=='skill_activate' return self.skill_activate(args) end
@@ -1519,6 +1534,9 @@ class TasmoClawTools
   def http_post(url, headers, body)
     var cl = nil
     try
+      # Brave and generic HTTP bridge calls use stock webclient so this remains
+      # compatible with upstream firmware.  Default headers are intentionally
+      # small; callers can opt out when an API requires exact header control.
       cl = webclient()
       cl.begin(url)
       try cl.set_timeouts(45000, 15000) except .. as e_to,m_to end
@@ -1560,6 +1578,9 @@ class TasmoClawTools
     if key == nil || key == ''
       return {'ok':false,'error':'Missing Brave Search API key in TasmoClaw config'}
     end
+    # Direct Brave Search is HTTPS and can fail when internal heap is too low,
+    # even on a PSRAM board.  Check early so the user gets a useful explanation
+    # instead of a vague webclient/TLS failure.
     var mem = {}
     try
       tasmota.gc()
@@ -2864,6 +2885,9 @@ class TasmoClawTools
       return {'ok':false,'error':'max_bytes too large'}
     end
 
+    # Explicit sd:/ and flash:/ prefixes avoid guessing.  Stock Tasmota exposes
+    # SD listing through UFS commands, but Berry file I/O is FlashFS-first, so
+    # content reads may need the UFS web endpoints depending on firmware support.
     if self.has_fs_prefix(p)
       return self.ufs_read_file(p, m)
     end
@@ -2949,6 +2973,9 @@ class TasmoClawTools
   def ufs_info(args)
     var out = {}
 
+    # Keep UFS probing as several small Tasmota commands.  Some stock builds
+    # omit individual UFS commands; returning partial results is more useful
+    # than failing the entire diagnostic.
     try
       out['ufs'] = tasmota.cmd('Ufs', true)
     except .. as e,m

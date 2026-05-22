@@ -1,3 +1,9 @@
+# Tasmota-Extensions Full entrypoint.
+#
+# Extension Manager loads this file from raw/TasmoClaw_Full.  Unlike the
+# standalone autoexec, this registers the returned driver with
+# tasmota.add_extension() so Extension Manager can later call unload().
+
 do
   import sys
 

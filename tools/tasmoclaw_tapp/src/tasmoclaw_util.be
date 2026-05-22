@@ -1,3 +1,8 @@
+# Small utility helpers shared by Full modules.
+#
+# Berry's built-in JSON encoder can fail on a few Tasmota values, so this file
+# provides a conservative encoder plus string, URL, and debug helpers.
+
 import string
 
 class TasmoClawUtil

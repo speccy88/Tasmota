@@ -1,3 +1,10 @@
+# Standalone Full TasmoClaw entrypoint.
+#
+# This file is used when installing the local tasmoclaw.tapp directly on a
+# device.  It loads each Berry module from the TAPP working directory and then
+# starts the Full driver.  Full intentionally requires PSRAM because it keeps a
+# broad tool registry, prompt context, history, and web UI in memory.
+
 import sys
 
 def tcl_load_file(wd, name)

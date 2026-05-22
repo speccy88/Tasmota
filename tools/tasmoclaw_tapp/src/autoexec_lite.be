@@ -1,3 +1,8 @@
+# Standalone Lite TasmoClaw entrypoint.
+#
+# This mirrors a regular TAPP autoexec: add the package working directory to
+# sys.path, load the Lite module, then leave the path stack clean.
+
 import sys
 
 var wd = tasmota.wd

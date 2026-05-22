@@ -163,7 +163,7 @@ From the `Tasmota-Extensions-TasmoClaw` checkout:
 python3 gen.py
 ```
 
-`gen.py` reads all folders under `raw/`, then writes:
+`gen.py` reads all folders under `raw/`, then writes generated artifacts:
 
 ```text
 extensions/extensions.jsonl
@@ -176,13 +176,12 @@ The expected TasmoClaw diff in the extension PR is:
 ```text
 raw/TasmoClaw_Lite/*
 raw/TasmoClaw_Full/*
-extensions/tapp/TasmoClaw_Lite.tapp
-extensions/tapp/TasmoClaw_Full.tapp
-extensions/extensions.jsonl
 ```
 
-If `gen.py` rewrites other existing `.tapp` files without content changes, Git
-should normally ignore them. Review `git status` and `git diff --stat` before
+Do not commit `extensions/tapp/TasmoClaw_*.tapp` or
+`extensions/extensions.jsonl`; the extension repository workflow generates them
+from `raw/`. If `gen.py` rewrites existing generated files locally, restore them
+before pushing the PR. Review `git status` and `git diff --stat` before
 staging.
 
 ## Verify The Extension Checkout
@@ -358,9 +357,6 @@ From the `Tasmota-Extensions-TasmoClaw` checkout:
 
 ```bash
 git add \
-  extensions/extensions.jsonl \
-  extensions/tapp/TasmoClaw_Full.tapp \
-  extensions/tapp/TasmoClaw_Lite.tapp \
   raw/TasmoClaw_Full \
   raw/TasmoClaw_Lite
 
@@ -393,8 +389,7 @@ Both packages are Berry/TAPP-only from the extension repository point of view.
 
 - Added `raw/TasmoClaw_Lite/` with manifest, extension autoexec, shared Lite backend, Lite entrypoint, and UI.
 - Added `raw/TasmoClaw_Full/` with manifest, extension autoexec, Full backend, tools, prompt, store, LLM, command catalog, and UI.
-- Added generated `extensions/tapp/TasmoClaw_Lite.tapp` and `extensions/tapp/TasmoClaw_Full.tapp`.
-- Updated `extensions/extensions.jsonl` through `python3 gen.py`.
+- Excluded generated `.tapp` files and `extensions/extensions.jsonl`; CI generates them from `raw/`.
 
 ## Validation
 

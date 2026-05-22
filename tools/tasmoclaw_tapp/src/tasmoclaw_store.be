@@ -1,3 +1,10 @@
+# Full TasmoClaw storage helper.
+#
+# Primary storage is FlashFS text/JSON files under the Tasmota filesystem.
+# persist is kept as a migration/fallback path for older builds and constrained
+# error cases.  Agent markdown files live in FlashFS so user instructions remain
+# readable and editable from the device.
+
 import persist
 import json
 import path
@@ -67,6 +74,9 @@ class TasmoClawStore
   end
 
   def default_agent_file(name)
+    # Seed files are intentionally generic.  They are public defaults for new
+    # installs; user-specific identity and preferences belong in the device's
+    # editable FlashFS copies, not in the extension source.
     if name == 'AGENTS.md'
       return '# AGENTS.md\n\n- Use tools before guessing when the request depends on live Tasmota state, files, rules, sensors, power, web search, or command output.\n- Prefer structured TasmoClaw tools over raw commands.\n- Keep workflows short: inspect, act, verify, summarize.\n- Finish requested multi-step work when possible.\n- Store durable facts in MEMORY.md and user preferences in USER.md.\n'
     elif name == 'SOUL.md'
@@ -293,6 +303,8 @@ class TasmoClawStore
   end
 
   def ensure_agent_files()
+    # Only create missing files.  Once a user edits AGENTS/SOUL/IDENTITY/USER or
+    # MEMORY, upgrades must preserve that local personality and memory.
     for name:self.agent_file_names()
       var p = self.agent_file_path(name)
       if p != nil
@@ -311,6 +323,8 @@ class TasmoClawStore
     if max_bytes == nil || max_bytes < 1
       max_bytes = 1800
     end
+    # Build one bounded prompt fragment from the markdown files.  The driver
+    # caches this at startup so ordinary chats do not reopen FlashFS repeatedly.
     var out = ''
     for name:self.agent_file_names()
       if size(out) >= max_bytes
@@ -339,6 +353,8 @@ class TasmoClawStore
     var cfg = self.default_config()
     var loaded = false
 
+    # Prefer the visible JSON file.  Older builds stored this JSON in persist;
+    # when found, migrate it back to FlashFS and remove the duplicate key.
     try
       var raw = self.read_file(self.config_file)
       if raw != nil
@@ -449,6 +465,8 @@ class TasmoClawStore
   end
 
   def save_history(h)
+    # History is Markdown so users can inspect it easily from the filesystem.
+    # Remove the previous JSON path during save to avoid stale duplicate state.
     var r = self.write_file(self.history_file, self.history_to_markdown(h))
     self.remove_file('/tasmoclaw_history.json')
     self.persist_delete(self.history_file)

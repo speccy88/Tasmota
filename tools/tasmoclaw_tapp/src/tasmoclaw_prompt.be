@@ -1,3 +1,9 @@
+# Prompt builder for Full TasmoClaw.
+#
+# The prompt is intentionally explicit because small models need concrete tool
+# routing rules.  Full prompt mode gives the most context; compact mode is the
+# default because it leaves more heap for stock webclient HTTPS requests.
+
 var tasmoclaw_prompt = module("tasmoclaw_prompt")
 
 tasmoclaw_prompt.build = def(tool_lines, extra, agent_context)

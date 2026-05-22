@@ -1,8 +1,17 @@
+# Full TasmoClaw driver.
+#
+# This is the PSRAM-oriented agent runtime.  It owns the web routes, chat loop,
+# tool approval flow, history persistence, and the bridge between LLM responses
+# and structured Tasmota/Berry tools.
+
 import webserver
 import json
 import string
 import introspect
 
+# TAPP and Extension Manager load paths differ slightly.  These helpers first
+# reuse already-registered module globals, then fall back to Berry introspection
+# and finally load from the current Tasmota working directory.
 def tcl_global_module(name)
   try
     if name == 'tasmoclaw_util' return global.tasmoclaw_util_mod end
@@ -103,6 +112,10 @@ class TasmoClawDriver : Driver
     end
     self.pending = self.store.load_pending()
     self.last_schedule_tick = 0
+
+    # Agent markdown files are read once at startup and refreshed only after an
+    # agent_file_* write.  This avoids reopening five FlashFS files for every
+    # chat request while still letting users edit behavior from the UI/tools.
     self.agent_context = self.store.agent_context(1800)
 
     self.ensure_cmds()
@@ -158,6 +171,9 @@ class TasmoClawDriver : Driver
 
   def every_second()
     try
+      # Scheduler ticks are cheap but do not need to run every second.  A
+      # five-second cadence gives local automations enough precision without
+      # constantly waking the router/scheduler helpers.
       var now = self.tools.now_seconds()
       if now <= 0
         return
@@ -696,6 +712,9 @@ class TasmoClawDriver : Driver
     var action_tool_seen = false
     var later_action_repair_used = false
 
+    # The model is allowed to call one tool, see the result, and then decide
+    # whether the original request still needs another tool.  This keeps prompt
+    # context smaller than sending every possible result up front.
     for _i:range(0,loops)
       tasmoclaw_util.debug('chat loop iteration=' + str(_i + 1) + '/' + str(loops) + ' messages=' + str(size(msgs)))
       var r=self.llm.call_chat(self.cfg,msgs)
@@ -2348,6 +2367,9 @@ class TasmoClawDriver : Driver
 
     var u=string.tolower(user)
 
+    # Direct intents are conservative shortcuts for common operations.  They
+    # avoid spending heap on an LLM round trip when the user's wording clearly
+    # maps to one local tool, while still using the same approval checks.
     var sched = self.light_schedule_intent(user)
     if sched != nil
       return sched

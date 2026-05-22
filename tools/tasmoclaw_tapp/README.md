@@ -31,6 +31,8 @@ It also exports Tasmota-Extensions-ready raw folders:
 - `dist/tasmota_extensions/raw/TasmoClaw_Lite/`
 - `dist/tasmota_extensions/raw/TasmoClaw_Full/`
 
+The standalone `dist/*.tapp` files are built from compact Berry source so local installs stay lean. The exported `dist/tasmota_extensions/raw/` files preserve indentation and comments because those are reviewed and maintained as source in the public `Tasmota-Extensions` repository.
+
 You can also build one target with `python3 build_tapp.py --target lite`, `--target full`, or explicitly build everything with `--target all`.
 Use `--skip-extension-export` only when you want to rebuild the standalone `.tapp` files without regenerating the extension raw folders.
 
@@ -64,7 +66,7 @@ cd /tmp/Tasmota-Extensions
 python3 gen.py
 ```
 
-The PR to `tasmota/Tasmota-Extensions` should add the two `raw/TasmoClaw_*` folders. That repository's `gen.py` creates `extensions/tapp/*.tapp` and `extensions/extensions.jsonl` from the raw folders.
+The PR to `tasmota/Tasmota-Extensions` should add only the two `raw/TasmoClaw_*` folders. That repository's `gen.py` creates `extensions/tapp/*.tapp` and `extensions/extensions.jsonl` from the raw folders, so those generated files should not be committed in the PR.
 
 ### Standard ESP32 / no-PSRAM builds
 

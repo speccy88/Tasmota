@@ -1,3 +1,9 @@
+# Lite TasmoClaw driver.
+#
+# Lite keeps the chat UI and everyday device tools while avoiding heavyweight
+# features such as web search and Berry program generation.  It is intended for
+# stock ESP32/no-PSRAM devices where heap pressure matters more.
+
 import webserver
 import json
 import persist
@@ -391,6 +397,9 @@ class TasmoClawCommon : Driver
   end
 
   def system_prompt()
+    # Lite uses one compact prompt instead of Full's skill catalog.  This keeps
+    # token count and heap pressure low while still teaching the model the small
+    # set of tools that remain useful on no-PSRAM stock devices.
     var tools = 'device_read, sensor_read, power_read, light_control, timer_control, rule_control, tasmota_cmd_read, ufs_info, file_list, file_read, file_write, file_delete, memory_read, memory_search, memory_append, memory_forget, power_control, display_control, tool_sequence_run'
     var cap = ' Lite keeps everyday work tools that fit no-PSRAM stock builds: status/sensors, power/light, simple timers, UFS/FlashFS, local memory, and display text. It cannot search the web, create/run Berry programs, edit SD file contents through Berry, or use Full-only programming skills. For requests like "turn the light on at night every day", choose timer_control/tool_sequence_run and hide the Tasmota command details from the user.'
     return 'You are TasmoClaw Lite on Tasmota. Keep answers short and useful. For live device state or device work, call a tool first. Tools: ' + tools + '.' + cap + ' Tool format only: <<<TASMOCLAW_TOOL>>> {"tool":"name","args":{},"reason":"why"} <<<END_TASMOCLAW_TOOL>>>. If calling a tool, output only the block. Use tasmota_cmd_read only for read-only commands like Status, State, Power, Time, Uptime, Mem, Module, Template, GPIO, I2CScan, Sensor, Wifi, IPAddress, TelePeriod, Rule1, Rule2, Rule3, Rules. Actions require approval unless auto approval is enabled.'
@@ -605,6 +614,9 @@ class TasmoClawCommon : Driver
   def direct_intent(user)
     var s = string.tolower(str(user))
 
+    # Lite has fewer tools and less heap, so direct local intent handling is
+    # important.  Clear requests such as status, power, files, or display text
+    # can be handled without asking the LLM to produce a tool block.
     var sched = self.light_schedule_intent(user)
     if sched != nil
       return sched
@@ -714,6 +726,10 @@ class TasmoClawCommon : Driver
     var wants_write = self.has_text(s, 'write') || self.has_text(s, 'create') || self.has_text(s, 'make') || self.has_text(s, 'save') || self.has_text(s, 'put ') || self.has_text(s, 'run') || self.has_text(s, 'load')
     var target_sd = self.has_text(s, 'sd card') || self.has_text(s, 'sdcard') || self.has_text(s, ' sd ')
     var target_berry = self.has_text(s, 'berry') || self.has_text(s, 'script') || self.has_text(s, 'program')
+
+    # Be explicit about stock firmware limits.  Lite should never pretend that
+    # SD content edits or Berry program generation are available when they are
+    # intentionally reserved for host tools or the Full package.
     if wants_write && target_sd
       return 'This is TasmoClaw Lite on stock firmware, so I can list SD files but cannot edit SD file contents through Berry. Use the Tasmota web file manager or a host helper for SD content writes.'
     end
@@ -736,6 +752,9 @@ class TasmoClawCommon : Driver
         self.api_json(self.approve_pending())
         return
       end
+
+      # Reject known Full-only requests before model selection.  This keeps Lite
+      # fast and gives users a clear upgrade path instead of a failed tool call.
       var unsupported = self.unsupported_request(user)
       if unsupported != nil
         self.history.push({'role':'user','content':user})
@@ -1089,6 +1108,9 @@ class TasmoClawCommon : Driver
   def file_read(args)
     var p = self.file_path(args)
     if p == nil return {'ok':false,'error':'missing path'} end
+
+    # Stock Berry cannot portably read SD card file contents, so Lite only reads
+    # FlashFS files directly.  SD users still get listing/status via UFS.
     if self.file_fs(args) == 'sd'
       return {'ok':false,'error':'Stock Tasmota Lite cannot read SD file contents through Berry. Use the Tasmota web file manager /ufsd endpoint from a browser or host.','path':p,'fs':'sd'}
     end

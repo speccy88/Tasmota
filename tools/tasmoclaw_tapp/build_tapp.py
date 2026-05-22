@@ -84,6 +84,12 @@ EXTENSIONS = {
 }
 
 def source_for_archive(source_name):
+    """Return compact Berry for standalone packages installed on devices.
+
+    The local TasmoClaw .tapp files are size-sensitive because they are copied
+    to FlashFS before Berry loads them.  Keep this path lean by stripping blank
+    lines, indentation, and full-line comments.
+    """
     text = (src / source_name).read_text()
     out = []
     for line in text.splitlines():
@@ -92,6 +98,16 @@ def source_for_archive(source_name):
             continue
         out.append(stripped)
     return '\n'.join(out) + '\n'
+
+
+def source_for_extension_raw(source_name):
+    """Return maintainable Berry source for the public extension repository.
+
+    Tasmota-Extensions builds .tapp files from raw/ in CI.  The files committed
+    there are source code for reviewers and future maintainers, so preserve
+    indentation and comments instead of exporting the compact install form.
+    """
+    return (src / source_name).read_text()
 
 
 def ensure_sources(name, files):
@@ -128,7 +144,7 @@ def export_extension(name):
     )
 
     for source, arcname in spec['files']:
-        (out_dir / arcname).write_text(source_for_archive(source))
+        (out_dir / arcname).write_text(source_for_extension_raw(source))
 
     print(f'Exported extension raw folder: {out_dir}')
 

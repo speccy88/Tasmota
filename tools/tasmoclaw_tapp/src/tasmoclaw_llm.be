@@ -1,3 +1,9 @@
+# LLM transport helper.
+#
+# Cloud providers use stock Tasmota Berry webclient() over HTTPS.  Local
+# OpenAI-compatible servers can use plain HTTP over tcpclient to avoid TLS heap
+# cost.  The caller receives normalized ok/error dictionaries either way.
+
 import json
 import string
 import introspect
@@ -10,6 +16,8 @@ class TasmoClawLLM
     var provider = self.provider(cfg)
     var local_provider = self.is_local_provider(provider)
 
+    # Cloud calls need an API key.  Local OpenAI-compatible servers usually do
+    # not, so they are allowed through without forcing placeholder secrets.
     if !local_provider && (cfg.find('api_key') == nil || cfg['api_key'] == '')
       tasmoclaw_util.debug('llm config error: missing api_key')
       return {'ok':false,'error':'Missing DeepSeek API key'}
@@ -48,6 +56,8 @@ class TasmoClawLLM
       thinking = 'omit'
     end
 
+    # DeepSeek can expose thinking controls, but local OpenAI-compatible
+    # endpoints vary widely.  Keep local payloads minimal for compatibility.
     if local_provider
       thinking = 'omit'
     end
@@ -206,6 +216,9 @@ class TasmoClawLLM
   end
 
   def call_chat_webclient(cfg, payload_s)
+    # Stock webclient may transiently fail with TLS/heap errors.  Retry only the
+    # small set of errors that are known to be intermittent; hard HTTP errors
+    # are returned immediately.
     var attempts = cfg.find('webclient_retries')
     if attempts == nil
       attempts = 2
@@ -407,6 +420,8 @@ class TasmoClawLLM
     if u == nil
       return {'ok':false,'transport':'tcpclient','status':-1,'error':'tcpclient chat supports plain HTTP only'}
     end
+    # Plain HTTP local calls avoid BearSSL heap pressure.  This path is only for
+    # trusted LAN/local endpoints configured by the user.
     var cl = nil
     try
       cl = tcpclient()
