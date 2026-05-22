@@ -636,6 +636,9 @@ class TasmoClawDriver : Driver
       self.refresh_agent_context_if_needed(direct['tool'])
       var direct_trace = self.format_tool_trace(direct['tool'], direct_result)
       var direct_content = self.format_tool_answer(user, direct['tool'], direct_result)
+      if direct['tool'] == 'web_search' && direct_result.find('ok') == true
+        direct_content = self.summarize_web_search(user, direct_result, direct_content)
+      end
       if direct['tool'] == 'berry_program_explain' && direct_result.find('ok') == true
         var cfg2 = {}
         for k:self.cfg.keys()
@@ -801,6 +804,9 @@ class TasmoClawDriver : Driver
             self.refresh_agent_context_if_needed(fallback['tool'])
             var fallback_trace = self.format_tool_trace(fallback['tool'], fallback_result)
             c = self.format_tool_answer(user, fallback['tool'], fallback_result)
+            if fallback['tool'] == 'web_search' && fallback_result.find('ok') == true
+              c = self.summarize_web_search(user, fallback_result, c)
+            end
             tasmoclaw_util.debug('chat fallback tool result tool=' + str(fallback['tool']) + ' ok=' + str(fallback_result.find('ok')))
             self.history.push({'role':'tool','content':fallback_trace})
             self.history.push({'role':'assistant','content':c})
@@ -935,6 +941,9 @@ class TasmoClawDriver : Driver
       self.refresh_agent_context_if_needed(final_fallback['tool'])
       var final_trace = self.format_tool_trace(final_fallback['tool'], final_result)
       var final_content = self.format_tool_answer(user, final_fallback['tool'], final_result)
+      if final_fallback['tool'] == 'web_search' && final_result.find('ok') == true
+        final_content = self.summarize_web_search(user, final_result, final_content)
+      end
       tasmoclaw_util.debug('chat retry-limit fallback tool=' + str(final_fallback['tool']) + ' ok=' + str(final_result.find('ok')))
       self.history.push({'role':'tool','content':final_trace})
       self.history.push({'role':'assistant','content':final_content})
@@ -1166,6 +1175,18 @@ class TasmoClawDriver : Driver
       return out
     end
 
+    if tool == 'web_search'
+      out += '\nProvider: ' + str(result.find('provider')) + ' Query: ' + str(result.find('query'))
+      var results = result.find('results')
+      if results != nil && size(results) > 0
+        var item = results[0]
+        out += '\nTitle: ' + str(item.find('title'))
+        out += '\nURL: ' + str(item.find('url'))
+        out += '\nSnippet: ' + tasmoclaw_util.preview(str(item.find('snippet')), 360)
+      end
+      return out
+    end
+
     var cmd = result.find('command')
     if cmd != nil
       out += '\nCommand: ' + str(cmd)
@@ -1306,6 +1327,56 @@ class TasmoClawDriver : Driver
     end
 
     return ''
+  end
+
+  def summarize_web_search(user, result, fallback)
+    if result == nil || result.find('ok') != true
+      return fallback
+    end
+    var results = result.find('results')
+    if results == nil || size(results) == 0
+      return fallback
+    end
+
+    var item = results[0]
+    var title = str(item.find('title'))
+    var url = str(item.find('url'))
+    var snippet = str(item.find('snippet'))
+    var cfg2 = {}
+    for k:self.cfg.keys()
+      cfg2[k] = self.cfg[k]
+    end
+    cfg2['max_tokens'] = 220
+    cfg2['temperature'] = 0.2
+    cfg2['thinking'] = 'omit'
+
+    var prompt = 'Original user request:\n' + str(user)
+    prompt += '\n\nBrave returned one result only. Use only this search result; do not claim you opened the page.'
+    prompt += '\nTitle: ' + title
+    prompt += '\nURL: ' + url
+    prompt += '\nSnippet: ' + snippet
+    prompt += '\n\nWrite a concise useful summary in 2 to 4 short sentences. Mention the source and include the URL at the end.'
+
+    var sr = self.llm.call_chat(cfg2, [
+      {
+        'role':'system',
+        'content':'You are Charlie, a funny but concise Tasmota expert. Summarize one web search result into a grounded answer. Do not add facts beyond the provided title, URL, and snippet.'
+      },
+      {
+        'role':'user',
+        'content':prompt
+      }
+    ])
+
+    var c = sr.find('content')
+    if sr.find('ok') == true && c != nil && c != '' && size(c) > 24
+      var marker = string.find(c, 'TASMOCLAW_TOOL')
+      if marker == nil || marker < 0
+        return c
+      end
+    end
+
+    return fallback
   end
 
   def format_tool_answer(user, tool, result)
